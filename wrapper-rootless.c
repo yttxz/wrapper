@@ -13,15 +13,10 @@
 #include <fcntl.h>
 
 #include "cmdline.h"
+#include "wrapper-common.h"
 
 pid_t child_proc = -1;
 struct gengetopt_args_info args_info;
-
-static void intHan(int signum) {
-    if (child_proc != -1) {
-        kill(child_proc, SIGKILL);
-    }
-}
 
 static int write_file(const char *path, const char *line) {
     int fd = open(path, O_WRONLY);
@@ -64,8 +59,7 @@ static int setup_unprivileged_namespaces() {
 
 int main(int argc, char *argv[], char *envp[]) {
     cmdline_parser(argc, argv, &args_info);
-    if (signal(SIGINT, intHan) == SIG_ERR) {
-        perror("signal");
+    if (wrapper_install_signal_handler() != 0) {
         return 1;
     }
 
@@ -84,20 +78,7 @@ int main(int argc, char *argv[], char *envp[]) {
         return 0;
     }
 
-    if (mkdir("./rootfs/dev", 0755) != 0 && errno != EEXIST) {
-        perror("mkdir ./rootfs/dev failed");
-        return 1;
-    }
-
-    int fd = open("./rootfs/dev/urandom", O_CREAT | O_RDWR, 0666);
-    if (fd < 0) {
-        perror("open ./rootfs/dev/urandom failed");
-        return 1;
-    }
-    close(fd);
-
-    if (mount("/dev/urandom", "./rootfs/dev/urandom", NULL, MS_BIND, NULL) != 0) {
-        perror("mount /dev/urandom failed");
+    if (wrapper_bind_urandom() != 0) {
         return 1;
     }
 
@@ -111,27 +92,14 @@ int main(int argc, char *argv[], char *envp[]) {
         return 1;
     }
 
-    // 5. 切换目录并 chroot
-    if (chdir("./rootfs") != 0) {
-        perror("chdir ./rootfs failed");
-        return 1;
-    }
-    if (chroot(".") != 0) {
-        perror("chroot . failed");
+    if (wrapper_enter_rootfs() != 0) {
         return 1;
     }
 
-    chmod("/system/bin/linker64", 0755);
-    chmod("/system/bin/main", 0755);
+    wrapper_chmod_runtime_binaries();
 
-    if (mkdir(args_info.base_dir_arg, 0777) != 0 && errno != EEXIST) {
-        perror("mkdir base_dir_arg failed");
-    } 
-    
-    char db_path[512];
-    snprintf(db_path, sizeof(db_path), "%s/mpl_db", args_info.base_dir_arg);
-    if (mkdir(db_path, 0777) != 0 && errno != EEXIST) {
-        perror("mkdir mpl_db failed");
+    if (wrapper_create_runtime_dirs(args_info.base_dir_arg) != 0) {
+        return 1;
     }
 
     execve("/system/bin/main", argv, envp);

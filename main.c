@@ -135,7 +135,10 @@ int split_string_safe(const char *str, const char *delim, char **components,
 
     token = strtok_r(copy, delim, &saveptr);
 
-    while (token != NULL && count < max_components) {
+    while (token != NULL) {
+        if (count >= max_components) {
+            return -2;
+        }
         components[count] = token;
         count++;
         token = strtok_r(NULL, delim, &saveptr);
@@ -838,43 +841,51 @@ void handle_account(const int connfd)
         return;
     }
 
-    // Format JSON response body
-    size_t json_size = 1024;
-    char *json_body = (char *)malloc(json_size);
-    if (json_body == NULL)
-    {
-        fprintf(stderr, "[.] failed to allocate memory for account response\n");
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL) {
+        fprintf(stderr, "[.] failed to allocate account response JSON\n");
         const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
         writefull(connfd, (void *)error_response, strlen(error_response));
         return;
     }
 
-    snprintf(json_body, json_size, "{\"storefront_id\":\"%s\",\"dev_token\":\"%s\",\"music_token\":\"%s\"}",
-             g_storefront_id, g_dev_token, g_music_token);
-
-    int json_len = strlen(json_body);
-
-    // Format HTTP response with headers
-    size_t response_size = 512;
-    char *http_response = (char *)malloc(response_size);
-    if (http_response == NULL)
-    {
-        fprintf(stderr, "[.] failed to allocate memory for HTTP response\n");
-        free(json_body);
+    if (cJSON_AddStringToObject(json, "storefront_id", g_storefront_id ? g_storefront_id : "") == NULL ||
+        cJSON_AddStringToObject(json, "dev_token", g_dev_token ? g_dev_token : "") == NULL ||
+        cJSON_AddStringToObject(json, "music_token", g_music_token ? g_music_token : "") == NULL) {
+        fprintf(stderr, "[.] failed to populate account response JSON\n");
+        cJSON_Delete(json);
         const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
         writefull(connfd, (void *)error_response, strlen(error_response));
         return;
     }
 
-    snprintf(http_response, response_size, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-             json_len);
+    char *json_body = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+    if (json_body == NULL) {
+        fprintf(stderr, "[.] failed to format account response JSON\n");
+        const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
+        writefull(connfd, (void *)error_response, strlen(error_response));
+        return;
+    }
+
+    size_t json_len = strlen(json_body);
+    char http_response[256];
+    int header_len = snprintf(http_response, sizeof(http_response),
+                              "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+                              json_len);
+    if (header_len < 0 || (size_t)header_len >= sizeof(http_response)) {
+        fprintf(stderr, "[.] failed to format account response headers\n");
+        cJSON_free(json_body);
+        const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
+        writefull(connfd, (void *)error_response, strlen(error_response));
+        return;
+    }
 
     fprintf(stderr, "[.] returning account info, storefront: %s\n", g_storefront_id);
-    writefull(connfd, http_response, strlen(http_response));
+    writefull(connfd, http_response, (size_t)header_len);
     writefull(connfd, json_body, json_len);
 
-    free(http_response);
-    free(json_body);
+    cJSON_free(json_body);
 }
 
 static inline void *new_socket_account(void *args)
@@ -905,14 +916,22 @@ static inline void *new_socket_account(void *args)
 
 char* get_account_storefront_id(struct shared_ptr reqCtx) {
     union std_string *region = malloc(sizeof(union std_string));
+    if (region == NULL) {
+        perror("malloc storefront");
+        return NULL;
+    }
     struct shared_ptr urlbag = {.obj = 0x0, .ctrl_blk = 0x0};
     _ZNK17storeservicescore14RequestContext20storeFrontIdentifierERKNSt6__ndk110shared_ptrINS_6URLBagEEE(region, reqCtx.obj, &urlbag);
     const char *region_str = std_string_data(region);
     if (region_str) {
         char *result = strdup(region_str); 
+        if (result == NULL) {
+            perror("strdup storefront");
+        }
         free(region);
         return result;
     } 
+    free(region);
     return NULL;
 }
 
@@ -966,13 +985,25 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
     union std_string bundleVersionHeader = new_std_string("X-Apple-Requesting-Bundle-Version");
     union std_string bundleVersionValue = new_std_string("Music/4.9 Android/10 model/Samsung S9 build/7663313 (dt:66)");
     _ZN13mediaplatform11HTTPMessage9setHeaderERKNSt6__ndk112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEES9_(httpMessage.obj, &bundleVersionHeader, &bundleVersionValue);
-    size_t body_size = 512;
-    char *body = (char *)malloc(body_size);
-    if (body == NULL) {
-        return "";
+    long long acceptance_time = getCurrentTimeMillis();
+    int body_len = snprintf(NULL, 0,
+                            "{\"guid\":\"%s\",\"assertion\":\"%s\",\"tcc-acceptance-date\":\"%lld\"}",
+                            guid, authToken, acceptance_time);
+    if (body_len < 0) {
+        fprintf(stderr, "[!] failed to format createMusicToken request body\n");
+        return NULL;
     }
 
-    snprintf(body, body_size, "{\"guid\":\"%s\",\"assertion\":\"%s\",\"tcc-acceptance-date\":\"%lld\"}", guid, authToken, getCurrentTimeMillis());
+    size_t body_size = (size_t)body_len + 1;
+    char *body = (char *)malloc(body_size);
+    if (body == NULL) {
+        perror("malloc createMusicToken body");
+        return NULL;
+    }
+
+    snprintf(body, body_size,
+             "{\"guid\":\"%s\",\"assertion\":\"%s\",\"tcc-acceptance-date\":\"%lld\"}",
+             guid, authToken, acceptance_time);
 
     _ZN13mediaplatform11HTTPMessage11setBodyDataEPcm(httpMessage.obj, body, strlen(body));
     free(body);
@@ -993,6 +1024,10 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
     void* data_ptr = *data_ptr_location;
     char *respBody = _ZNK13mediaplatform4Data5bytesEv(data_ptr);
     cJSON *json = cJSON_Parse(respBody);
+    if (json == NULL) {
+        fprintf(stderr, "[!] createMusicToken error: invalid JSON response\n");
+        return NULL;
+    }
     cJSON *token_obj = cJSON_GetObjectItemCaseSensitive(json, "music_token");
     char *token = cJSON_GetStringValue(token_obj);
     if (token == NULL) {
@@ -1001,9 +1036,14 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
         fprintf(stderr, "[!] createMusicToken failed: %s (%s)\n",
                 err_desc ? err_desc : "unknown error",
                 err_code ? err_code : "?");
+        cJSON_Delete(json);
         return NULL;
     }
     char *result = strdup(token);
+    if (result == NULL) {
+        perror("strdup music_token");
+    }
+    cJSON_Delete(json);
     return result;
 }
 
@@ -1040,13 +1080,22 @@ char* get_dev_token(struct shared_ptr reqCtx) {
     void* data_ptr = *data_ptr_location;
     char *respBody = _ZNK13mediaplatform4Data5bytesEv(data_ptr);
     cJSON *json = cJSON_Parse(respBody);
+    if (json == NULL) {
+        fprintf(stderr, "[!] devToken error: invalid JSON response\n");
+        return NULL;
+    }
     cJSON *token_obj = cJSON_GetObjectItemCaseSensitive(json, "token");
     char *token = cJSON_GetStringValue(token_obj);
     if (token == NULL) {
         fprintf(stderr, "[!] devToken error: token field missing in response\n");
+        cJSON_Delete(json);
         return NULL;
     }
     char *result = strdup(token);
+    if (result == NULL) {
+        perror("strdup dev token");
+    }
+    cJSON_Delete(json);
     return result;
 }
 
@@ -1096,9 +1145,9 @@ void write_music_token(void) {
 }
 
 int offline_available() {
-    struct shared_ptr *fairplay = malloc(16);
-    _ZN17storeservicescore14RequestContext8fairPlayEv(fairplay, reqCtx.obj);
-    struct std_vector fairplay_status = _ZN17storeservicescore8FairPlay21getSubscriptionStatusEv(fairplay->obj);
+    struct shared_ptr fairplay;
+    _ZN17storeservicescore14RequestContext8fairPlayEv(&fairplay, reqCtx.obj);
+    struct std_vector fairplay_status = _ZN17storeservicescore8FairPlay21getSubscriptionStatusEv(fairplay.obj);
     char *begin_ptr = (char*)fairplay_status.begin;
     char *second_item_ptr = begin_ptr + 16;
     int state = *(int*)((char*)second_item_ptr + 8);
