@@ -2,13 +2,21 @@
 
 A tool to decrypt Apple Music songs. An active subscription is still needed.
 
-Supports only x86_64 and arm64 Linux.
+Supports only x86_64 and arm64 Linux for the functional decryption engine.
+
+Native macOS builds are detected by CMake and produce a command-compatible
+Docker-backed launcher. The bundled runtime in `rootfs/` is made of
+Android/Linux x86-64 ELF binaries, which macOS cannot load natively, so the
+launcher builds and runs the Linux engine through Docker while mounting the
+local `rootfs/data` account state.
 
 ## Installation
 
 Installation methods:
 
 - [Docker](#docker) (recommended)
+- [macOS launcher](#macos-launcher)
+- [Diagnostics](#diagnostics)
 - Prebuilt binaries (from [releases](https://github.com/WorldObservationLog/wrapper/releases) or [actions](https://github.com/WorldObservationLog/wrapper/actions))
 - [Build from source](#build-from-source)
 
@@ -19,13 +27,20 @@ Available for x86_64 and arm64. Need to download prebuilt version from releases 
 1. Build image:
 
 ```
-docker build --tag ghcr.io/worldobservationlog/wrapper:local .
+docker build --platform linux/amd64 --tag ghcr.io/worldobservationlog/wrapper:local .
 ```
+
+Local `rootfs/data` account state is intentionally excluded from Docker images.
+Always mount `rootfs/data` at runtime.
 
 2. Login:
 
 ```
-docker run --privileged --rm -it -v ./rootfs/data:/app/rootfs/data --entrypoint ./wrapper ghcr.io/worldobservationlog/wrapper:local -L "username:password" -H 0.0.0.0
+docker run --platform linux/amd64 --privileged --rm -it \
+  -v "$PWD/rootfs/data:/app/rootfs/data" \
+  -e USERNAME="username" \
+  -e PASSWORD="password" \
+  ghcr.io/worldobservationlog/wrapper:local
 ```
 
 Quit after this (using Ctrl-C).
@@ -33,11 +48,91 @@ Quit after this (using Ctrl-C).
 3. Run:
 
 ```
-docker run --privileged -v ./rootfs/data:/app/rootfs/data -p 10020:10020 -p 20020:20020 -p 30020:30020 -e args="-H 0.0.0.0" ghcr.io/worldobservationlog/wrapper:local
+docker run --platform linux/amd64 --privileged --rm -it \
+  -v "$PWD/rootfs/data:/app/rootfs/data" \
+  -p 127.0.0.1:10020:10020 \
+  -p 127.0.0.1:20020:20020 \
+  -p 127.0.0.1:30020:30020 \
+  ghcr.io/worldobservationlog/wrapper:local
 ```
 
+### macOS launcher
+
+Docker Desktop is required.
+
+Build the launcher:
+
+```
+mkdir -p build-macos
+cmake -S . -B build-macos
+cmake --build build-macos
+```
+
+Run it like the normal wrapper:
+
+```
+./build-macos/wrapper
+```
+
+On first run, the launcher builds a local `wrapper-macos:local` Docker image,
+mounts `rootfs/data`, publishes the decrypt, m3u8, and account ports, and starts
+the Linux engine in Docker. The wrapper's `-H` value is used as the macOS host
+bind address; inside the container the engine binds to `0.0.0.0` so published
+ports work correctly.
+
+To use a different image tag:
+
+```
+WRAPPER_DOCKER_IMAGE=wrapper-run:after ./build-macos/wrapper
+```
+
+### Diagnostics
+
+Run the shared doctor check when Docker, mounts, cached account data, ports, or
+the macOS launcher are not behaving as expected:
+
+```
+./scripts/doctor.sh
+```
+
+The macOS launcher exposes the same check:
+
+```
+./build-macos/wrapper --doctor
+```
+
+Inside the Docker image:
+
+```
+docker run --platform linux/amd64 --privileged --rm \
+  -v "$PWD/rootfs/data:/app/rootfs/data" \
+  wrapper-macos:local --doctor
+```
+
+For a fast local development smoke check:
+
+```
+./scripts/check.sh
+```
+
+Set `RUN_DOCKER_CHECKS=1` to include the Docker build and container doctor
+checks.
 
 ### Build from source
+
+On macOS ARM64:
+
+```
+mkdir build
+cd build
+cmake ..
+make
+```
+
+This builds the Docker-backed launcher. It does not run the bundled
+Android/Linux engine as native Mach-O code.
+
+On Linux:
 
 1. Install dependencies:
 

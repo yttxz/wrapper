@@ -3,6 +3,18 @@ cmake_minimum_required(VERSION 3.25)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 11)
 
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    project(wrapper LANGUAGES C)
+
+    add_executable(wrapper macos-native.c cmdline.c)
+    target_compile_options(wrapper PRIVATE -Wall -Wextra)
+    target_compile_definitions(wrapper PRIVATE WRAPPER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+    message(STATUS "Configuring Docker-backed native macOS launcher")
+    message(STATUS "The bundled Android/Linux ELF engine will run through Docker on macOS.")
+    return()
+endif()
+
 set(ANDROID_NDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/android-ndk-r23b" CACHE PATH "NDK Path")
 set(TOOLCHAIN "${ANDROID_NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64")
 
@@ -13,7 +25,6 @@ set(C_COMPILER "${TOOLCHAIN}/bin/clang")
 project(wrapper LANGUAGES C CXX)
 
 include(FetchContent)
-include(ExternalProject)
 
 FetchContent_Declare(
     cjson
@@ -32,7 +43,7 @@ FetchContent_MakeAvailable(cjson)
 FetchContent_Declare(
   dobby
   GIT_REPOSITORY https://github.com/BepInEx/Dobby.git
-  GIT_TAG        master
+  GIT_TAG        v1.0.5
 )
 set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
 set(DOBBY_GENERATE_SHARED OFF CACHE BOOL "" FORCE)
@@ -84,24 +95,29 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror")
 endif()
 
-ExternalProject_Add(
-    wrapper_exe
-    PREFIX ${CMAKE_BINARY_DIR}/wrapper_build
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND ${C_COMPILER} -O3 -Wall -o wrapper ${WRAPPER_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/cmdline.c
-    BUILD_IN_SOURCE 1
-    INSTALL_COMMAND ""
-    DEPENDS main
+set(WRAPPER_OUTPUT "${CMAKE_SOURCE_DIR}/wrapper")
+set(WRAPPER_ROOTLESS_OUTPUT "${CMAKE_SOURCE_DIR}/wrapper-rootless")
+
+add_custom_command(
+    OUTPUT "${WRAPPER_OUTPUT}"
+    COMMAND "${C_COMPILER}" -O3 -Wall -o "${WRAPPER_OUTPUT}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/${WRAPPER_SOURCE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmdline.c"
+    DEPENDS main "${CMAKE_CURRENT_SOURCE_DIR}/${WRAPPER_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/cmdline.c"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    VERBATIM
 )
 
-ExternalProject_Add(
-    wrapper_rootless_exe
-    PREFIX ${CMAKE_BINARY_DIR}/wrapper_build
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND ${C_COMPILER} -O3 -Wall -o wrapper ${WRAPPER_ROOTLESS_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/cmdline.c
-    BUILD_IN_SOURCE 1
-    INSTALL_COMMAND ""
-    DEPENDS main
+add_custom_target(wrapper_exe ALL DEPENDS "${WRAPPER_OUTPUT}")
+
+add_custom_command(
+    OUTPUT "${WRAPPER_ROOTLESS_OUTPUT}"
+    COMMAND "${C_COMPILER}" -O3 -Wall -o "${WRAPPER_ROOTLESS_OUTPUT}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/${WRAPPER_ROOTLESS_SOURCE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmdline.c"
+    DEPENDS main "${CMAKE_CURRENT_SOURCE_DIR}/${WRAPPER_ROOTLESS_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/cmdline.c"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    VERBATIM
 )
+
+add_custom_target(wrapper_rootless_exe ALL DEPENDS "${WRAPPER_ROOTLESS_OUTPUT}")

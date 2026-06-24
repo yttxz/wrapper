@@ -6,6 +6,9 @@
 .gitignore
 .gitmodules
 .vscode
+**/.DS_Store
+rootfs/data/**
 Dockerfile
 README.md
 build
+build-*

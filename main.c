@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 
 #include "import.h"
 #include "cmdline.h"
@@ -99,22 +100,21 @@ void install_hooks() {
 }
 #endif
 
-int file_exists(char *filename) {
+int file_exists(const char *filename) {
   struct stat buffer;   
   return (stat (filename, &buffer) == 0);
 }
 
-char *strcat_b(char *dest, char* src) {
-    size_t len1 = strlen(dest);
-    size_t len2 = strlen(src);
-
-    char *result = malloc(len1 + len2 + 1);
-    if (!result) return NULL; 
-
-    strcpy(result, dest);
-    strcat(result, src);
-
-    return result;
+static int format_base_path(char *buffer, const size_t buffer_size,
+                            const char *suffix) {
+    const int needed = snprintf(buffer, buffer_size, "%s%s",
+                                args_info.base_dir_arg, suffix);
+    if (needed < 0 || (size_t)needed >= buffer_size) {
+        fprintf(stderr, "[!] path is too long: %s%s\n",
+                args_info.base_dir_arg, suffix);
+        return 0;
+    }
+    return 1;
 }
 
 int split_string_safe(const char *str, const char *delim, char **components, 
@@ -146,6 +146,7 @@ int split_string_safe(const char *str, const char *delim, char **components,
 
 static void dialogHandler(long j, struct shared_ptr *protoDialogPtr,
                           struct shared_ptr *respHandler) {
+    (void)respHandler;
     const char *const title = std_string_data(
         _ZNK17storeservicescore14ProtocolDialog5titleEv(protoDialogPtr->obj));
     fprintf(stderr, "[.] dialogHandler: {title: %s, message: %s}\n", title,
@@ -187,6 +188,7 @@ static void dialogHandler(long j, struct shared_ptr *protoDialogPtr,
 
 static void credentialHandler(struct shared_ptr *credReqHandler,
                               struct shared_ptr *credRespHandler) {
+    (void)credRespHandler;
     const uint8_t need2FA =
         _ZNK17storeservicescore18CredentialsRequest28requiresHSA2VerificationCodeEv(
             credReqHandler->obj);
@@ -198,24 +200,44 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
             credReqHandler->obj)),
         need2FA ? "true" : "false");
 
-    int passLen = strlen(amPassword);
+    if (amPassword == NULL) {
+        fprintf(stderr, "[!] password is not available for credential request\n");
+        exit(EXIT_FAILURE);
+    }
+
+    const char *password_value = amPassword;
+    char *password_with_code = NULL;
 
     if (need2FA) {
+        char code[7] = {0};
         if (args_info.code_from_file_flag) {
             fprintf(stderr, "[!] Enter your 2FA code into rootfs/%s/2fa.txt\n", args_info.base_dir_arg);
             fprintf(stderr, "[!] Example command: echo -n 114514 > rootfs/%s/2fa.txt\n", args_info.base_dir_arg);
             fprintf(stderr, "[!] Waiting for input...\n");
             int count = 0;
+            char path[1024];
+            if (snprintf(path, sizeof(path), "%s/2fa.txt", args_info.base_dir_arg) >= (int)sizeof(path)) {
+                fprintf(stderr, "[!] 2FA path is too long\n");
+                exit(EXIT_FAILURE);
+            }
             while (1)
             {
                 if (count >= 20) {
                     fprintf(stderr, "[!] Failed to get 2FA Code in 60s. Exiting...\n");
-                    exit(0);
+                    exit(EXIT_FAILURE);
                 }
-                char *path = strcat_b(args_info.base_dir_arg, "/2fa.txt");
                 if (file_exists(path)) {
                     FILE *fp = fopen(path, "r");
-                    fscanf(fp, "%6s", amPassword + passLen);
+                    if (fp == NULL) {
+                        perror("fopen 2fa.txt");
+                        exit(EXIT_FAILURE);
+                    }
+                    if (fscanf(fp, "%6s", code) != 1) {
+                        fclose(fp);
+                        fprintf(stderr, "[!] Failed to read 2FA code from file\n");
+                        exit(EXIT_FAILURE);
+                    }
+                    fclose(fp);
                     remove(path);
                     fprintf(stderr, "[!] Code file detected! Logging in...\n");
                     break;
@@ -226,8 +248,22 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
             }
         } else {
             printf("2FA code: ");
-            scanf("%6s", amPassword + passLen);
+            if (scanf("%6s", code) != 1) {
+                fprintf(stderr, "[!] Failed to read 2FA code\n");
+                exit(EXIT_FAILURE);
+            }
         }
+
+        const size_t passLen = strlen(amPassword);
+        const size_t codeLen = strlen(code);
+        password_with_code = malloc(passLen + codeLen + 1);
+        if (password_with_code == NULL) {
+            perror("malloc");
+            exit(EXIT_FAILURE);
+        }
+        memcpy(password_with_code, amPassword, passLen);
+        memcpy(password_with_code + passLen, code, codeLen + 1);
+        password_value = password_with_code;
     }
 
     uint8_t *const ptr = malloc(80);
@@ -242,7 +278,7 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
     _ZN17storeservicescore19CredentialsResponse11setUserNameERKNSt6__ndk112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(
         credResp.obj, &username);
 
-    union std_string password = new_std_string(amPassword);
+    union std_string password = new_std_string(password_value);
     _ZN17storeservicescore19CredentialsResponse11setPasswordERKNSt6__ndk112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(
         credResp.obj, &password);
 
@@ -251,6 +287,8 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
 
     _ZN20androidstoreservices28AndroidPresentationInterface25handleCredentialsResponseERKNSt6__ndk110shared_ptrIN17storeservicescore19CredentialsResponseEEE(
         apInf.obj, &credResp);
+
+    free(password_with_code);
 }
 
 
@@ -295,8 +333,11 @@ static inline void init() {
 
 static inline struct shared_ptr init_ctx() {
     fprintf(stderr, "[+] initializing ctx...\n");
-    union std_string strBuf =
-        new_std_string(strcat_b(args_info.base_dir_arg, "/mpl_db"));
+    char db_path[1024];
+    if (!format_base_path(db_path, sizeof(db_path), "/mpl_db")) {
+        exit(EXIT_FAILURE);
+    }
+    union std_string strBuf = new_std_string(db_path);
 
     struct shared_ptr reqCtx;
     _ZNSt6__ndk110shared_ptrIN17storeservicescore14RequestContextEE11make_sharedIJRNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEEES3_DpOT_(
@@ -366,11 +407,17 @@ extern void *pbErrCallback;
 
 inline static uint8_t login(struct shared_ptr reqCtx) {
     fprintf(stderr, "[+] logging in...\n");
-    if (file_exists(strcat_b(args_info.base_dir_arg, "/STOREFRONT_ID"))) {
-        remove(strcat_b(args_info.base_dir_arg, "/STOREFRONT_ID"));
+    char storefront_path[1024];
+    char music_token_path[1024];
+    if (!format_base_path(storefront_path, sizeof(storefront_path), "/STOREFRONT_ID") ||
+        !format_base_path(music_token_path, sizeof(music_token_path), "/MUSIC_TOKEN")) {
+        return 0;
     }
-    if (file_exists(strcat_b(args_info.base_dir_arg, "/MUSIC_TOKEN"))) {
-        remove(strcat_b(args_info.base_dir_arg, "/MUSIC_TOKEN"));
+    if (file_exists(storefront_path)) {
+        remove(storefront_path);
+    }
+    if (file_exists(music_token_path)) {
+        remove(music_token_path);
     }
     struct shared_ptr flow;
     _ZNSt6__ndk110shared_ptrIN17storeservicescore16AuthenticateFlowEE11make_sharedIJRNS0_INS1_14RequestContextEEEEEES3_DpOT_(
@@ -541,43 +588,80 @@ void handle(const int connfd) {
 
 extern uint8_t handle_cpp(int);
 
-inline static int new_socket() {
+static int is_transient_accept_error(const int err) {
+    return err == ENETDOWN || err == EPROTO || err == ENOPROTOOPT ||
+           err == EHOSTDOWN || err == ENONET || err == EHOSTUNREACH ||
+           err == EOPNOTSUPP || err == ENETUNREACH;
+}
+
+static int open_listening_socket(const char *label, const int port) {
     const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
     if (fd == -1) {
         perror("socket");
-        return EXIT_FAILURE;
+        return -1;
     }
-    const int optval = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
 
-    static struct sockaddr_in serv_addr = {.sin_family = AF_INET};
-    inet_pton(AF_INET, args_info.host_arg, &serv_addr.sin_addr);
-    serv_addr.sin_port = htons(args_info.decrypt_port_arg);
+    const int optval = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) == -1) {
+        perror("setsockopt");
+        close(fd);
+        return -1;
+    }
+
+    struct sockaddr_in serv_addr;
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    if (inet_pton(AF_INET, args_info.host_arg, &serv_addr.sin_addr) != 1) {
+        fprintf(stderr, "[!] invalid host address: %s\n", args_info.host_arg);
+        close(fd);
+        return -1;
+    }
+
+    serv_addr.sin_port = htons(port);
     if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1) {
         perror("bind");
-        return EXIT_FAILURE;
+        close(fd);
+        return -1;
     }
 
     if (listen(fd, 5) == -1) {
         perror("listen");
-        return EXIT_FAILURE;
+        close(fd);
+        return -1;
     }
 
-    fprintf(stderr, "[!] listening %s:%d\n", args_info.host_arg, args_info.decrypt_port_arg);
-    // close(STDOUT_FILENO);
+    fprintf(stderr, "[!] listening %s on %s:%d\n", label, args_info.host_arg, port);
+    return fd;
+}
 
-    static struct sockaddr_in peer_addr;
-    static socklen_t peer_addr_size = sizeof(peer_addr);
+static int accept_client(const int fd) {
+    struct sockaddr_in peer_addr;
+    socklen_t peer_addr_size = sizeof(peer_addr);
+
     while (1) {
         const int connfd = accept4(fd, (struct sockaddr *)&peer_addr,
                                    &peer_addr_size, SOCK_CLOEXEC);
+        if (connfd != -1) {
+            return connfd;
+        }
+        if (is_transient_accept_error(errno)) {
+            continue;
+        }
+        perror("accept4");
+        return -1;
+    }
+}
+
+inline static int new_socket() {
+    const int fd = open_listening_socket("decrypt", args_info.decrypt_port_arg);
+    if (fd == -1) {
+        return EXIT_FAILURE;
+    }
+    // close(STDOUT_FILENO);
+
+    while (1) {
+        const int connfd = accept_client(fd);
         if (connfd == -1) {
-            if (errno == ENETDOWN || errno == EPROTO || errno == ENOPROTOOPT ||
-                errno == EHOSTDOWN || errno == ENONET ||
-                errno == EHOSTUNREACH || errno == EOPNOTSUPP ||
-                errno == ENETUNREACH)
-                continue;
-            perror("accept4");
             return EXIT_FAILURE;
         }
 
@@ -685,12 +769,19 @@ void handle_m3u8(const int connfd) {
         if (adamSize <= 0) {
             return;
         }
-        char adam[adamSize];
-        for (int i=0; i<adamSize; i=i+1) {
-            readfull(connfd, &adam[i], sizeof(uint8_t));
+        char adam[adamSize + 1];
+        if (!readfull(connfd, adam, adamSize)) {
+            return;
         }
-        char *ptr;
+        adam[adamSize] = '\0';
+        char *ptr = NULL;
+        errno = 0;
         unsigned long adamID = strtoul(adam, &ptr, 10);
+        if (errno != 0 || ptr == adam || *ptr != '\0') {
+            fprintf(stderr, "[.] invalid adamId: %s\n", adam);
+            writefull(connfd, "\n", 1);
+            continue;
+        }
         const char *m3u8;
         if (offlineFlag) {
             m3u8 = get_m3u8_method_download(reqCtx, adamID);
@@ -699,56 +790,28 @@ void handle_m3u8(const int connfd) {
         }
         if (m3u8 == NULL) {
             fprintf(stderr, "[.] failed to get m3u8 of adamId: %ld\n", adamID);
-            writefull(connfd, "\n", sizeof("\n"));
+            writefull(connfd, "\n", 1);
         } else {
             fprintf(stderr, "[.] m3u8 adamId: %ld, url: %s\n", adamID, m3u8);
-            char *with_newline = malloc(strlen(m3u8) + 2);
-            if (with_newline) {
-                strcpy(with_newline, m3u8);
-                strcat(with_newline, "\n");
-                writefull(connfd, with_newline, strlen(with_newline));
-                free(with_newline);
-            }
+            writefull(connfd, (void *)m3u8, strlen(m3u8));
+            writefull(connfd, "\n", 1);
             free((void *)m3u8);
         }
     }
 }
 
 static inline void *new_socket_m3u8(void *args) {
-    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    (void)args;
+    const int fd = open_listening_socket("m3u8 request", args_info.m3u8_port_arg);
     if (fd == -1) {
-        perror("socket");
+        return NULL;
     }
-    const int optval = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
-
-    static struct sockaddr_in serv_addr = {.sin_family = AF_INET};
-    inet_pton(AF_INET, args_info.host_arg, &serv_addr.sin_addr);
-    serv_addr.sin_port = htons(args_info.m3u8_port_arg);
-    if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1) {
-        perror("bind");
-    }
-
-    if (listen(fd, 5) == -1) {
-        perror("listen");
-    }
-
-    fprintf(stderr, "[!] listening m3u8 request on %s:%d\n", args_info.host_arg, args_info.m3u8_port_arg);
     // close(STDOUT_FILENO);
 
-    static struct sockaddr_in peer_addr;
-    static socklen_t peer_addr_size = sizeof(peer_addr);
     while (1) {
-        const int connfd = accept4(fd, (struct sockaddr *)&peer_addr,
-                                   &peer_addr_size, SOCK_CLOEXEC);
+        const int connfd = accept_client(fd);
         if (connfd == -1) {
-            if (errno == ENETDOWN || errno == EPROTO || errno == ENOPROTOOPT ||
-                errno == EHOSTDOWN || errno == ENONET ||
-                errno == EHOSTUNREACH || errno == EOPNOTSUPP ||
-                errno == ENETUNREACH)
-                continue;
-            perror("accept4");
-            
+            continue;
         }
 
         handle_m3u8(connfd);
@@ -816,46 +879,19 @@ void handle_account(const int connfd)
 
 static inline void *new_socket_account(void *args)
 {
-    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    (void)args;
+    const int fd = open_listening_socket("account info request", args_info.account_port_arg);
     if (fd == -1)
     {
-        perror("socket");
-        return NULL;
-    }
-    const int optval = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
-
-    static struct sockaddr_in serv_addr = {.sin_family = AF_INET};
-    inet_pton(AF_INET, args_info.host_arg, &serv_addr.sin_addr);
-    serv_addr.sin_port = htons(args_info.account_port_arg);
-    if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1)
-    {
-        perror("bind");
         return NULL;
     }
 
-    if (listen(fd, 5) == -1)
-    {
-        perror("listen");
-        return NULL;
-    }
-
-    fprintf(stderr, "[!] listening account info request on %s:%d\n", args_info.host_arg, args_info.account_port_arg);
-
-    static struct sockaddr_in peer_addr;
-    static socklen_t peer_addr_size = sizeof(peer_addr);
     while (1)
     {
-        const int connfd = accept4(fd, (struct sockaddr *)&peer_addr,
-                                   &peer_addr_size, SOCK_CLOEXEC);
+        const int connfd = accept_client(fd);
         if (connfd == -1)
         {
-            if (errno == ENETDOWN || errno == EPROTO || errno == ENOPROTOOPT ||
-                errno == EHOSTDOWN || errno == ENONET ||
-                errno == EHOSTUNREACH || errno == EOPNOTSUPP ||
-                errno == ENETUNREACH)
-                continue;
-            perror("accept4");
+            continue;
         }
 
         handle_account(connfd);
@@ -881,7 +917,15 @@ char* get_account_storefront_id(struct shared_ptr reqCtx) {
 }
 
 void write_storefront_id(void) {
-    FILE *fp = fopen(strcat_b(args_info.base_dir_arg, "/STOREFRONT_ID"), "w");
+    char path[1024];
+    if (!format_base_path(path, sizeof(path), "/STOREFRONT_ID")) {
+        return;
+    }
+    FILE *fp = fopen(path, "w");
+    if (fp == NULL) {
+        perror("fopen STOREFRONT_ID");
+        return;
+    }
     fprintf(stderr, "[+] StoreFront ID: %s\n", g_storefront_id);
     fprintf(fp, "%s", g_storefront_id);
     fclose(fp);
@@ -1007,9 +1051,14 @@ char* get_dev_token(struct shared_ptr reqCtx) {
 }
 
 void write_music_token(void) {
+    char path[1024];
+    if (!format_base_path(path, sizeof(path), "/MUSIC_TOKEN")) {
+        return;
+    }
+
     int token_file_available = 0;
-    if (file_exists(strcat_b(args_info.base_dir_arg, "/MUSIC_TOKEN"))) {
-        FILE *fp = fopen(strcat_b(args_info.base_dir_arg, "/MUSIC_TOKEN"), "r");
+    if (file_exists(path)) {
+        FILE *fp = fopen(path, "r");
         if (NULL != fp) {
             fseek (fp, 0, SEEK_END);
             long size = ftell(fp);
@@ -1017,16 +1066,30 @@ void write_music_token(void) {
             if (0 != size) {
                 token_file_available = 1;
             }
+            fclose(fp);
         }
     }
     if (token_file_available) {
         char token[256];
-        FILE *fp = fopen(strcat_b(args_info.base_dir_arg, "/MUSIC_TOKEN"), "r");
-        fgets(token, sizeof(token), fp);
+        FILE *fp = fopen(path, "r");
+        if (fp == NULL) {
+            perror("fopen MUSIC_TOKEN");
+            return;
+        }
+        if (fgets(token, sizeof(token), fp) == NULL) {
+            fclose(fp);
+            fprintf(stderr, "[!] failed to read MUSIC_TOKEN\n");
+            return;
+        }
+        fclose(fp);
         fprintf(stderr, "[+] Music-Token: %.14s...\n", token);
         return;
     }
-    FILE *fp = fopen(strcat_b(args_info.base_dir_arg, "/MUSIC_TOKEN"), "w");
+    FILE *fp = fopen(path, "w");
+    if (fp == NULL) {
+        perror("fopen MUSIC_TOKEN");
+        return;
+    }
     fprintf(stderr, "[+] Music-Token: %.14s...\n", g_music_token);
     fprintf(fp, "%s", g_music_token);
     fclose(fp);
@@ -1046,9 +1109,16 @@ int offline_available() {
 }
 
 int main(int argc, char *argv[]) {
-    cmdline_parser(argc, argv, &args_info);
+    if (cmdline_parser(argc, argv, &args_info) != 0) {
+        return EXIT_FAILURE;
+    }
     char *copy_that_needs_to_be_freed = NULL;
-    split_string_safe(args_info.device_info_arg, "/", device_infos, 9, &copy_that_needs_to_be_freed);
+    int device_info_count = split_string_safe(args_info.device_info_arg, "/", device_infos, 9, &copy_that_needs_to_be_freed);
+    if (device_info_count != 9) {
+        fprintf(stderr, "[!] device-info must contain 9 slash-separated fields\n");
+        free(copy_that_needs_to_be_freed);
+        return EXIT_FAILURE;
+    }
 
     #ifndef MyRelease
     install_hooks();
@@ -1057,8 +1127,14 @@ int main(int argc, char *argv[]) {
     init();
     reqCtx = init_ctx();
     if (args_info.login_given) {
-        amUsername = strtok(args_info.login_arg, ":");
-        amPassword = strtok(NULL, ":");
+        char *separator = strchr(args_info.login_arg, ':');
+        if (separator == NULL || separator == args_info.login_arg || separator[1] == '\0') {
+            fprintf(stderr, "[!] login must be in username:password format\n");
+            return EXIT_FAILURE;
+        }
+        *separator = '\0';
+        amUsername = args_info.login_arg;
+        amPassword = separator + 1;
     }
     if (args_info.login_given && !login(reqCtx)) {
         fprintf(stderr, "[!] login failed\n");
@@ -1098,11 +1174,21 @@ int main(int argc, char *argv[]) {
     write_music_token();
 
     pthread_t m3u8_thread;
-    pthread_create(&m3u8_thread, NULL, &new_socket_m3u8, NULL);
+    int thread_err = pthread_create(&m3u8_thread, NULL, &new_socket_m3u8, NULL);
+    if (thread_err != 0) {
+        errno = thread_err;
+        perror("pthread_create m3u8");
+        return EXIT_FAILURE;
+    }
     pthread_detach(m3u8_thread);
 
     pthread_t account_thread;
-    pthread_create(&account_thread, NULL, &new_socket_account, NULL);
+    thread_err = pthread_create(&account_thread, NULL, &new_socket_account, NULL);
+    if (thread_err != 0) {
+        errno = thread_err;
+        perror("pthread_create account");
+        return EXIT_FAILURE;
+    }
     pthread_detach(account_thread);
 
     return new_socket();

@@ -30,10 +30,6 @@ RUN --mount=type=cache,target=/var/lib/apt,sharing=locked \
     fi
 
 RUN if [[ ! -f /use_prebuild ]]; then \
-      bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"; \
-    fi
-
-RUN if [[ ! -f /use_prebuild ]]; then \
         aria2c -o android-ndk-r${NDK_VERSION}b-linux.zip https://dl.google.com/android/repository/android-ndk-r${NDK_VERSION}b-linux.zip; \
         unzip -q -d /app android-ndk-r${NDK_VERSION}b-linux.zip; \
         rm android-ndk-r${NDK_VERSION}b-linux.zip; \
@@ -59,8 +55,10 @@ WORKDIR /app
 COPY --from=build /app/wrapper /app/wrapper
 COPY --from=build /app/rootfs /app/rootfs
 COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+COPY scripts/doctor.sh /app/scripts/doctor.sh
+RUN mkdir -p /app/rootfs/data/data/com.apple.android.music/files && \
+    chmod +x /app/entrypoint.sh /app/scripts/doctor.sh
 
-CMD ["/app/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 EXPOSE 10020 20020 30020
