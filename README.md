@@ -3,24 +3,13 @@
 `wrapper` runs the Apple Music decryption engine from the bundled Linux/Android
 runtime. An active Apple Music subscription is still required.
 
-This fork keeps the original Linux/Docker workflow and adds a macOS-friendly
-launcher that builds a small native command on macOS, then runs the real Linux
-engine through Docker.
-
-## What Changed In This Fork
-
-- Added a Docker-backed macOS launcher built from `macos-native.c`.
-- Added automatic macOS detection in CMake.
-- Added `scripts/doctor.sh` for Docker, port, mount, and runtime checks.
-- Added `scripts/check.sh` for a local smoke test.
-- Updated Docker usage so `rootfs/data` is mounted instead of baked into images.
-- Added safer Docker examples for Apple Silicon and x86_64 macOS.
-- Cleaned up several C paths around login parsing, path construction, sockets,
-  token/cache file handling, and basic input validation.
+This fork keeps the Linux/Docker workflow and adds a macOS-friendly launcher.
+On macOS, the native `wrapper` command is only a convenience layer: the real
+Linux engine still runs inside Docker.
 
 ## Platform Support
 
-The functional decryption engine is still Linux-based.
+The functional engine is Linux-based.
 
 | Platform | Status |
 | --- | --- |
@@ -31,31 +20,42 @@ The functional decryption engine is still Linux-based.
 | Native macOS engine | Not supported |
 
 The bundled runtime in `rootfs/` contains Linux/Android ELF binaries. macOS
-cannot load those binaries directly, so the macOS launcher is a wrapper around
-Docker, not a native port of the engine.
+cannot load those binaries directly, so macOS support depends on Docker.
 
-## Notes On The macOS Launcher
+## What This Fork Adds
 
-The macOS launcher is mostly a convenience layer. It lets you build and run a
-normal-looking `wrapper` command on macOS, but the actual work still happens in
-Docker because the bundled engine is Linux-based.
+- Docker-backed macOS launcher built from `macos-native.c`.
+- CMake host detection for native macOS launcher builds.
+- Docker entrypoint support for first-login and normal service runs.
+- `scripts/doctor.sh` for runtime, Docker, port, and capability diagnostics.
+- `scripts/check.sh` for local and Docker-backed validation.
+- `rootfs/data` mounted at runtime instead of baked into Docker images.
+- Shared common setup code for the privileged Linux wrapper and rootless wrapper.
+- Safer C paths around input parsing, path formatting, token/cache handling,
+  account JSON formatting, sockets, and cleanup.
 
-That means the Mac build is easier to use than typing the full Docker command
-every time. It keeps the same wrapper options, mounts `rootfs/data` for account
-state, publishes the usual local ports, and can run a doctor check when
-something feels off.
+## Data Directory
 
-It also means Docker Desktop is not optional. Docker has to be installed and
-running, the container still needs privileged mode, and the first run can take a
-while because the image may need to build. On Apple Silicon Macs, Docker may
-also run the `linux/amd64` image through emulation.
+`rootfs/data` stores local account state, token caches, and app data. It is
+mounted into Docker containers and intentionally excluded from Docker images.
+Do not commit it.
 
-Be careful with `rootfs/data`. It can contain account/session state, so it
-should stay local and should not be committed.
+The main account database lives under:
+
+```text
+rootfs/data/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb
+```
+
+On first login, provide `USERNAME` and `PASSWORD`. If a 2FA code is requested
+while running with `--code-from-file`, write it to:
+
+```text
+rootfs/data/data/com.apple.android.music/files/2fa.txt
+```
 
 ## Quick Start On macOS
 
-Install Docker Desktop first, then build the launcher:
+Install Docker Desktop first, then build the native launcher:
 
 ```sh
 mkdir -p build-macos
@@ -63,7 +63,7 @@ cmake -S . -B build-macos
 cmake --build build-macos
 ```
 
-Check your setup:
+Check the setup:
 
 ```sh
 ./build-macos/wrapper --doctor
@@ -86,12 +86,20 @@ Use a custom image tag:
 WRAPPER_DOCKER_IMAGE=wrapper-run:local ./build-macos/wrapper
 ```
 
+On macOS, `-H` controls the host address used for Docker port publishing. Inside
+the container, the Linux engine binds to `0.0.0.0` so published ports work.
+
 ## Docker Workflow
 
-Build the image:
+The Docker workflow is the recommended way to run the Linux engine on macOS and
+is also the integration path used by the full check script. The default wrapper
+needs `--privileged` because it bind-mounts `/dev/urandom`, enters `rootfs`,
+mounts `/proc`, and starts the engine in a Linux runtime environment.
+
+Build a local image:
 
 ```sh
-docker build --platform linux/amd64 --tag ghcr.io/worldobservationlog/wrapper:local .
+docker build --platform linux/amd64 --tag wrapper:local .
 ```
 
 Login when no account database exists:
@@ -101,10 +109,10 @@ docker run --platform linux/amd64 --privileged --rm -it \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
   -e USERNAME="username" \
   -e PASSWORD="password" \
-  ghcr.io/worldobservationlog/wrapper:local
+  wrapper:local
 ```
 
-Quit after login completes.
+Quit after login completes. Later service runs reuse the mounted account state.
 
 Run the service:
 
@@ -114,7 +122,7 @@ docker run --platform linux/amd64 --privileged --rm -it \
   -p 127.0.0.1:10020:10020 \
   -p 127.0.0.1:20020:20020 \
   -p 127.0.0.1:30020:30020 \
-  ghcr.io/worldobservationlog/wrapper:local
+  wrapper:local
 ```
 
 Run diagnostics inside Docker:
@@ -122,55 +130,12 @@ Run diagnostics inside Docker:
 ```sh
 docker run --platform linux/amd64 --privileged --rm \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
-  ghcr.io/worldobservationlog/wrapper:local --doctor
+  wrapper:local --doctor
 ```
 
-## Diagnostics
+## Linux Workflow
 
-Run the doctor script from the source tree:
-
-```sh
-./scripts/doctor.sh
-```
-
-Run the same check through the macOS launcher:
-
-```sh
-./build-macos/wrapper --doctor
-```
-
-The doctor checks:
-
-- required `rootfs` files
-- `rootfs/data` account directory
-- account database and token cache files
-- Docker CLI and Docker daemon access
-- expected Docker image platform
-- default service ports
-- Linux container capability requirements
-
-Warnings are not always fatal. For example, the engine binary may be missing
-from the source tree before a Docker build because Docker generates it inside
-the image.
-
-## Development Checks
-
-Run the local smoke check:
-
-```sh
-./scripts/check.sh
-```
-
-By default, this checks shell syntax, C syntax, the macOS launcher build, and
-basic wrapper commands. Docker image/container checks are skipped unless enabled:
-
-```sh
-RUN_DOCKER_CHECKS=1 ./scripts/check.sh
-```
-
-## Build From Source On Linux
-
-Install dependencies:
+Install build dependencies:
 
 ```sh
 sudo apt install build-essential cmake curl unzip git
@@ -198,6 +163,82 @@ cmake ..
 make -j"$(nproc)"
 ```
 
+The Linux build produces:
+
+- `rootfs/system/bin/main`, the engine-facing binary.
+- `wrapper`, the default privileged launcher.
+- `wrapper-rootless`, the rootless launcher for Linux hosts with unprivileged
+  user, mount, and PID namespaces enabled.
+
+Both Linux launchers share setup code for signal forwarding, `/dev/urandom`,
+`chroot`, runtime binary permissions, and data directory creation. Their
+namespace and `/proc` setup remains separate because privileged and rootless
+launch paths have different ordering requirements.
+
+## Services
+
+Default ports:
+
+| Port | Service |
+| --- | --- |
+| `10020` | Decrypt service |
+| `20020` | M3U8 URL service |
+| `30020` | Account info JSON service |
+
+The account info endpoint returns JSON with `storefront_id`, `dev_token`, and
+`music_token`. Responses are built with `cJSON` so token strings are escaped as
+valid JSON.
+
+## Diagnostics
+
+Run the doctor script from the source tree:
+
+```sh
+./scripts/doctor.sh
+```
+
+Run the same check through the macOS launcher:
+
+```sh
+./build-macos/wrapper --doctor
+```
+
+The doctor checks:
+
+- required `rootfs` files
+- `rootfs/data` account directory
+- account database and token cache files
+- Docker CLI and Docker daemon access
+- expected Docker image platform
+- default service ports
+- Linux container capability requirements
+
+Warnings are not always fatal. For example, the engine binary can be missing
+from the source tree before a Docker build because Docker generates it inside
+the image. Port warnings mean something is already listening on that port.
+
+## Development Checks
+
+Run the local smoke check:
+
+```sh
+./scripts/check.sh
+```
+
+This checks shell syntax, C syntax, doctor diagnostics, macOS launcher build
+behavior on macOS, and basic wrapper commands. On macOS, Docker Desktop must be
+running because doctor diagnostics check Docker availability.
+
+Run the full Docker-backed check before publishing Linux/Docker changes:
+
+```sh
+RUN_DOCKER_CHECKS=1 ./scripts/check.sh
+```
+
+The extended check builds a `linux/amd64` image, verifies account state from
+`rootfs/data` is not baked into the image, and runs doctor diagnostics inside a
+privileged container.
+
 ## Command-Line Options
 
 ```text
@@ -207,7 +248,7 @@ Usage: wrapper [OPTION]...
   -V, --version             Print version and exit
   -H, --host=STRING         Host to bind on (default: 127.0.0.1)
   -D, --decrypt-port=INT    Decrypt service port (default: 10020)
-  -M, --m3u8-port=INT       m3u8 service port (default: 20020)
+  -M, --m3u8-port=INT       M3U8 service port (default: 20020)
   -A, --account-port=INT    Account service port (default: 30020)
   -P, --proxy=STRING        Proxy string (default: empty)
   -L, --login=STRING        Login in username:password format
@@ -216,17 +257,13 @@ Usage: wrapper [OPTION]...
   -I, --device-info=STRING  Slash-separated device identity fields
 ```
 
-On macOS, `-H` controls the host address used for Docker port publishing. Inside
-the container, the Linux engine still binds to `0.0.0.0` so published ports work.
-
-## Data And Safety Notes
-
-`rootfs/data` stores local account state, tokens, and cache files. It is mounted
-into Docker containers and intentionally excluded from Docker images. Do not
-commit it.
+## Safety Notes
 
 Use this project only with an active subscription and in situations where you
 have the right to access the content.
+
+Keep `rootfs/data` local. It can contain account/session state and should not be
+published or committed.
 
 ## Special Thanks
 
