@@ -8,6 +8,10 @@ services:
         NDK_VERSION: 23
     volumes:
       - ./rootfs/data:/app/rootfs/data
+    ports:
+      - "127.0.0.1:10020:10020"
+      - "127.0.0.1:20020:20020"
+      - "127.0.0.1:30020:30020"
     environment:
       USERNAME: ${USERNAME}
       PASSWORD: ${PASSWORD}
