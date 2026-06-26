@@ -14,16 +14,16 @@ if [ ! -d "/app/rootfs/data/data/com.apple.android.music/files" ]; then
 fi
 
 run_login() {
-  if [ -t 0 ] && [ "${WRAPPER_2FA_FROM_FILE:-0}" != "1" ]; then
+  if [ "${WRAPPER_2FA_FROM_FILE:-0}" = "1" ]; then
     exec ./wrapper \
       -L "${USERNAME}:${PASSWORD}" \
+      -F \
       -H 0.0.0.0 \
       "$@"
   fi
 
   exec ./wrapper \
     -L "${USERNAME}:${PASSWORD}" \
-    -F \
     -H 0.0.0.0 \
     "$@"
 }

@@ -61,18 +61,19 @@ Normal service runs reuse these files and should not need `USERNAME` or
 `PASSWORD`. Provide credentials only for first login, when the token cache is
 missing, or when the saved session has expired.
 
-During interactive login, a requested 2FA code is entered in the same terminal
-and the input is hidden. Detached or non-interactive Docker runs use
-`--code-from-file`; set `WRAPPER_2FA_FROM_FILE=1` to force that mode in an
-interactive run. In file mode, write the six-digit code to:
+During login, a requested 2FA code is entered in the same terminal and the
+input is hidden. File-based 2FA is only used when explicitly requested with
+`--code-from-file`; set `WRAPPER_2FA_FROM_FILE=1` for Docker entrypoint runs
+that need that mode. In file mode, write the six-digit code to:
 
 ```text
 rootfs/data/data/com.apple.android.music/files/2fa.txt
 ```
 
-The code file is removed after the wrapper reads it. The default wait is 60
-seconds; set `WRAPPER_2FA_TIMEOUT_SECONDS` to a value from `1` to `600` to
-adjust it.
+The code file must be a regular file, not a symlink, and readable only by the
+owner, such as with `chmod 600`. The code file is removed after the wrapper
+reads a valid, empty, or malformed code. The default wait is 60 seconds; set
+`WRAPPER_2FA_TIMEOUT_SECONDS` to a value from `1` to `600` to adjust it.
 
 ## Docker Workflow
 
@@ -119,17 +120,19 @@ docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
 When 2FA is requested, enter the code at the container prompt. The code is read
 like a password and is not echoed to the terminal.
 
-For detached or non-interactive login, or if you prefer the file handoff, add
-`-e WRAPPER_2FA_FROM_FILE=1` to the Docker command and write the code from
-another terminal:
+For detached or non-interactive login, or if you prefer the file handoff,
+explicitly add `-e WRAPPER_2FA_FROM_FILE=1` to the Docker command and write the
+code from another terminal:
 
 ```sh
 umask 077
 printf '%s' 123456 > rootfs/data/data/com.apple.android.music/files/2fa.txt
 ```
 
-Only exactly six digits are accepted. In file mode, empty or malformed code
-files are deleted and the wrapper keeps waiting until the 2FA timeout expires.
+Only exactly six digits are accepted. The file must be a regular, non-symlink
+file readable only by its owner. In file mode, empty or malformed code files
+are deleted and the wrapper keeps waiting until the 2FA timeout expires; unsafe
+handoff files are refused.
 
 Quit after login completes. Later service runs reuse the mounted account state
 and should not include credentials.

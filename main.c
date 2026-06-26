@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <ctype.h>
+#include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
@@ -26,6 +27,7 @@
 #define TWO_FACTOR_CODE_LENGTH 6
 #define TWO_FACTOR_DEFAULT_TIMEOUT_SECONDS 60
 #define TWO_FACTOR_MAX_TIMEOUT_SECONDS 600
+#define TWO_FACTOR_MAX_FILE_BYTES 64
 #define TWO_FACTOR_POLL_SECONDS 3
 #define MAX_DECRYPT_ADAM_ID_BYTES 32
 #define MAX_DECRYPT_KEY_URI_BYTES 240
@@ -163,33 +165,101 @@ static int is_valid_2fa_code(const char *code) {
 }
 
 static int read_2fa_code_file(const char *path, char code[TWO_FACTOR_CODE_LENGTH + 1]) {
-    struct stat st;
-    if (stat(path, &st) == 0 && (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
-        fprintf(stderr, "[!] Warning: 2FA code file is accessible by group/other; use chmod 600 for %s\n",
-                path);
-    }
-
-    FILE *fp = fopen(path, "r");
-    if (fp == NULL) {
-        perror("fopen 2fa.txt");
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd == -1) {
+        if (errno == ELOOP) {
+            fprintf(stderr, "[!] Refusing symlinked 2FA code file: %s\n", path);
+        } else if (errno == ENOENT) {
+            return 0;
+        } else {
+            perror("open 2fa.txt");
+        }
         return -1;
     }
 
-    char raw[64] = {0};
-    int read_ok = fscanf(fp, "%63s", raw);
-    fclose(fp);
-    if (read_ok != 1) {
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        perror("fstat 2fa.txt");
+        return -1;
+    }
+
+    if (!S_ISREG(st.st_mode)) {
+        fprintf(stderr, "[!] Refusing 2FA code path that is not a regular file: %s\n",
+                path);
+        close(fd);
+        return -1;
+    }
+
+    if ((st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        fprintf(stderr, "[!] Refusing 2FA code file accessible by group/other; use chmod 600 for %s\n",
+                path);
+        close(fd);
+        return -1;
+    }
+
+    if (st.st_size == 0) {
+        fprintf(stderr, "[!] 2FA code file is empty\n");
+        close(fd);
+        return 0;
+    }
+
+    if (st.st_size > TWO_FACTOR_MAX_FILE_BYTES) {
+        fprintf(stderr, "[!] 2FA code file is too large\n");
+        close(fd);
+        return 0;
+    }
+
+    char raw[TWO_FACTOR_MAX_FILE_BYTES + 1] = {0};
+    const size_t expected_bytes = (size_t)st.st_size;
+    const ssize_t bytes_read = read(fd, raw, expected_bytes);
+    if (bytes_read < 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        perror("read 2fa.txt");
+        return -1;
+    }
+    close(fd);
+
+    if ((size_t)bytes_read != expected_bytes) {
+        fprintf(stderr, "[!] Failed to read complete 2FA code file\n");
+        return -1;
+    }
+
+    for (ssize_t i = 0; i < bytes_read; i++) {
+        if (raw[i] == '\0') {
+            fprintf(stderr, "[!] Invalid 2FA code file; NUL bytes are not allowed\n");
+            return 0;
+        }
+    }
+    raw[bytes_read] = '\0';
+
+    char *start = raw;
+    while (isspace((unsigned char)*start)) {
+        start++;
+    }
+
+    char *end = start + strlen(start);
+    while (end > start && isspace((unsigned char)end[-1])) {
+        end--;
+    }
+    *end = '\0';
+
+    if (start[0] == '\0') {
         fprintf(stderr, "[!] 2FA code file is empty\n");
         return 0;
     }
 
-    if (!is_valid_2fa_code(raw)) {
+    if (!is_valid_2fa_code(start)) {
         fprintf(stderr, "[!] Invalid 2FA code; expected exactly %d digits\n",
                 TWO_FACTOR_CODE_LENGTH);
         return 0;
     }
 
-    memcpy(code, raw, TWO_FACTOR_CODE_LENGTH + 1);
+    memcpy(code, start, TWO_FACTOR_CODE_LENGTH + 1);
     return 1;
 }
 
@@ -198,29 +268,30 @@ static int read_hidden_line(const char *prompt, char *buffer, size_t buffer_size
         return 0;
     }
 
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "[!] stdin is not a TTY; rerun interactively or use --code-from-file explicitly\n");
+        return 0;
+    }
+
     fprintf(stderr, "%s", prompt);
     fflush(stderr);
 
     int echo_disabled = 0;
     struct termios old_termios;
-    if (isatty(STDIN_FILENO)) {
-        if (tcgetattr(STDIN_FILENO, &old_termios) != 0) {
-            perror("tcgetattr");
-            fprintf(stderr, "\n");
-            return 0;
-        }
-
-        struct termios new_termios = old_termios;
-        new_termios.c_lflag &= ~(ECHO);
-        if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_termios) != 0) {
-            perror("tcsetattr");
-            fprintf(stderr, "\n");
-            return 0;
-        }
-        echo_disabled = 1;
-    } else {
-        fprintf(stderr, "[!] stdin is not a TTY; use --code-from-file to avoid visible 2FA input\n");
+    if (tcgetattr(STDIN_FILENO, &old_termios) != 0) {
+        perror("tcgetattr");
+        fprintf(stderr, "\n");
+        return 0;
     }
+
+    struct termios new_termios = old_termios;
+    new_termios.c_lflag &= ~(ECHO);
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_termios) != 0) {
+        perror("tcsetattr");
+        fprintf(stderr, "\n");
+        return 0;
+    }
+    echo_disabled = 1;
 
     int ok = fgets(buffer, buffer_size, stdin) != NULL;
     int saved_errno = errno;
@@ -365,7 +436,7 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
             while (waited_seconds < timeout_seconds) {
                 if (file_exists(path)) {
                     int read_result = read_2fa_code_file(path, code);
-                    if (remove(path) != 0 && errno != ENOENT) {
+                    if (read_result >= 0 && remove(path) != 0 && errno != ENOENT) {
                         perror("remove 2fa.txt");
                     }
                     if (read_result < 0) {
