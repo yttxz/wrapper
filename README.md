@@ -44,6 +44,10 @@ cannot load those binaries directly, so macOS support depends on Docker.
 mounted into Docker containers and intentionally excluded from Docker images.
 Do not commit it.
 
+The Docker entrypoint does not recursively change ownership of mounted
+`rootfs/data` by default. If a moved or restored data directory has ownership
+that prevents startup, set `WRAPPER_CHOWN_DATA=1` for one repair run.
+
 The main account database lives under:
 
 ```text
@@ -262,11 +266,24 @@ Default ports:
 
 The account info endpoint returns JSON with `storefront_id`, `dev_token`, and
 `music_token`. Responses are built with `cJSON` so token strings are escaped as
-valid JSON.
+valid JSON. Treat this endpoint as sensitive because it returns bearer-style
+account tokens; bind it to localhost unless you have added your own access
+control in front of it.
 
 The M3U8 URL service chooses the offline/download channel when available and
 falls back to the streaming playback channel otherwise. Set
 `WRAPPER_DISABLE_OFFLINE=1` in the container environment to force streaming.
+
+Runtime request caps reject oversized inputs before large allocations or
+token-bearing responses are processed:
+
+| Service | Limit |
+| --- | --- |
+| Decrypt adam ID | 32 bytes |
+| Decrypt key URI | 240 bytes |
+| Decrypt sample | 16 MiB |
+| M3U8 adam ID | 32 bytes |
+| Account HTTP request | 4 KiB |
 
 ## Diagnostics
 
@@ -344,6 +361,15 @@ have the right to access the content.
 
 Keep `rootfs/data` local. It can contain account/session state and should not be
 published or committed.
+
+The default Docker path requires `--privileged` so the Linux launcher can set up
+its runtime namespace and mounts. Do not run untrusted wrapper images or expose
+the service ports beyond localhost without an additional security boundary.
+
+Account tokens, M3U8 URLs, and auth responses can grant access to account-bound
+resources. Normal logs avoid printing token prefixes, full playback URLs, and
+auth response previews. Debug Android/curl runtime logs are opt-in with
+`WRAPPER_VERBOSE_RUNTIME_LOGS=1` and may contain sensitive protocol data.
 
 ## Special Thanks
 

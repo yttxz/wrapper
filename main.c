@@ -27,6 +27,11 @@
 #define TWO_FACTOR_DEFAULT_TIMEOUT_SECONDS 60
 #define TWO_FACTOR_MAX_TIMEOUT_SECONDS 600
 #define TWO_FACTOR_POLL_SECONDS 3
+#define MAX_DECRYPT_ADAM_ID_BYTES 32
+#define MAX_DECRYPT_KEY_URI_BYTES 240
+#define MAX_DECRYPT_SAMPLE_BYTES (16U * 1024U * 1024U)
+#define MAX_M3U8_ADAM_ID_BYTES 32
+#define MAX_ACCOUNT_REQUEST_BYTES 4096
 
 static struct shared_ptr apInf;
 static uint8_t leaseMgr[16];
@@ -53,6 +58,12 @@ int32_t CURLOPT_SSL_VERIFYHOST = 81;
 int32_t CURLOPT_PINNEDPUBLICKEY = 10230;
 int32_t CURLOPT_VERBOSE = 43;
 
+static int verbose_runtime_logs_enabled(void) {
+    const char *value = getenv("WRAPPER_VERBOSE_RUNTIME_LOGS");
+    return value != NULL && value[0] != '\0' &&
+           strcmp(value, "0") != 0 && strcmp(value, "false") != 0;
+}
+
 int curl_easy_setopt_hook(void *curl, int32_t option, ...) {
     va_list args;
     va_start(args, option);
@@ -62,8 +73,10 @@ int curl_easy_setopt_hook(void *curl, int32_t option, ...) {
     if (option == CURLOPT_SSL_VERIFYPEER || 
         option == CURLOPT_SSL_VERIFYHOST || 
         option == CURLOPT_PINNEDPUBLICKEY) {
-        fprintf(stderr, "[+] hooked curl_easy_setopt %d\n", option);
-        orig_curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        if (verbose_runtime_logs_enabled()) {
+            fprintf(stderr, "[+] hooked curl_easy_setopt %d\n", option);
+            orig_curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        }
         return orig_curl_easy_setopt(curl, option, 0L);
     }  else {
         return orig_curl_easy_setopt(curl, option, param);
@@ -77,16 +90,20 @@ int android_log_print_hook(int prio, const char *tag, const char *fmt, ...) {
     va_start(args, fmt);
     vsnprintf(log_buffer, sizeof(log_buffer), fmt, args);
     va_end(args);
-    fprintf(stderr, "[%s] %s\n", tag, log_buffer);
+    if (verbose_runtime_logs_enabled()) {
+        fprintf(stderr, "[%s] %s\n", tag, log_buffer);
+    }
     return 0;
 }
 
 int android_log_write_hook(int prio, const char *tag, const char *text) {
-    fprintf(stderr, "[%s] %s\n", tag, text);
+    if (verbose_runtime_logs_enabled()) {
+        fprintf(stderr, "[%s] %s\n", tag, text);
+    }
     return 0;
 }
 
-static uint8_t allDebug() { return 1; }
+static uint8_t allDebug() { return verbose_runtime_logs_enabled() ? 1 : 0; }
 
 void install_hooks() {
     DobbyHook((void*)_ZN13mediaplatform26DebugLogEnabledForPriorityENS_11LogPriorityE,
@@ -564,14 +581,15 @@ inline static uint8_t login(struct shared_ptr reqCtx) {
     if (respType != 6) {
         const char *customer_msg = std_string_data(
             _ZNK17storeservicescore20AuthenticateResponse15customerMessageEv(resp->obj));
-        if (customer_msg && *customer_msg)
-            fprintf(stderr, "[!] server message: %s\n", customer_msg);
+        if (customer_msg && *customer_msg) {
+            fprintf(stderr, "[!] auth failed: server returned a customer message (%zu bytes)\n",
+                    strlen(customer_msg));
+        }
 
         struct shared_ptr *err = _ZNK17storeservicescore20AuthenticateResponse5errorEv(resp->obj);
         if (err != NULL && err->obj != NULL) {
             int code = _ZNK17storeservicescore19StoreErrorCondition9errorCodeEv(err->obj);
-            const char *what = _ZNK17storeservicescore19StoreErrorCondition4whatEv(err->obj);
-            fprintf(stderr, "[!] auth error: code=%d, message=%s\n", code, what ? what : "none");
+            fprintf(stderr, "[!] auth error: code=%d, message omitted\n", code);
         } else {
             fprintf(stderr, "[!] auth failed: response type %d\n", respType);
         }
@@ -620,7 +638,7 @@ inline static void *getKdContext(const char *const adam,
     if (isPreshare && preshareCtx != NULL) {
         return preshareCtx;
     }
-    fprintf(stderr, "[.] adamId: %s, uri: %s\n", adam, uri);
+    fprintf(stderr, "[.] adamId: %s, key uri bytes: %zu\n", adam, strlen(uri));
 
     union std_string defaultId = new_std_string(adam);
     union std_string keyUri = new_std_string(uri);
@@ -670,6 +688,11 @@ void handle(const int connfd) {
             return;
         if (adamSize <= 0)
             return;
+        if (adamSize > MAX_DECRYPT_ADAM_ID_BYTES) {
+            fprintf(stderr, "[.] decrypt request rejected: adamId is %u bytes; max is %u\n",
+                    (unsigned int)adamSize, (unsigned int)MAX_DECRYPT_ADAM_ID_BYTES);
+            return;
+        }
 
         char adam[adamSize + 1];
         if (!readfull(connfd, adam, adamSize))
@@ -679,6 +702,11 @@ void handle(const int connfd) {
         uint8_t uri_size;
         if (!readfull(connfd, &uri_size, sizeof(uint8_t)))
             return;
+        if (uri_size == 0 || uri_size > MAX_DECRYPT_KEY_URI_BYTES) {
+            fprintf(stderr, "[.] decrypt request rejected: key uri is %u bytes; max is %u\n",
+                    (unsigned int)uri_size, (unsigned int)MAX_DECRYPT_KEY_URI_BYTES);
+            return;
+        }
 
         char uri[uri_size + 1];
         if (!readfull(connfd, uri, uri_size))
@@ -698,6 +726,11 @@ void handle(const int connfd) {
 
             if (size <= 0)
                 break;
+            if (size > MAX_DECRYPT_SAMPLE_BYTES) {
+                fprintf(stderr, "[.] decrypt sample rejected: %u bytes; max is %u\n",
+                        (unsigned int)size, (unsigned int)MAX_DECRYPT_SAMPLE_BYTES);
+                return;
+            }
 
             void *sample = malloc(size);
             if (sample == NULL) {
@@ -900,6 +933,11 @@ void handle_m3u8(const int connfd) {
         if (adamSize <= 0) {
             return;
         }
+        if (adamSize > MAX_M3U8_ADAM_ID_BYTES) {
+            fprintf(stderr, "[.] m3u8 request rejected: adamId is %u bytes; max is %u\n",
+                    (unsigned int)adamSize, (unsigned int)MAX_M3U8_ADAM_ID_BYTES);
+            return;
+        }
         char adam[adamSize + 1];
         if (!readfull(connfd, adam, adamSize)) {
             return;
@@ -923,7 +961,8 @@ void handle_m3u8(const int connfd) {
             fprintf(stderr, "[.] failed to get m3u8 of adamId: %ld\n", adamID);
             writefull(connfd, "\n", 1);
         } else {
-            fprintf(stderr, "[.] m3u8 adamId: %ld, url: %s\n", adamID, m3u8);
+            fprintf(stderr, "[.] m3u8 adamId: %ld, url bytes: %zu\n",
+                    adamID, strlen(m3u8));
             writefull(connfd, (void *)m3u8, strlen(m3u8));
             writefull(connfd, "\n", 1);
             free((void *)m3u8);
@@ -955,9 +994,14 @@ static inline void *new_socket_m3u8(void *args) {
 
 void handle_account(const int connfd)
 {
-    char buffer[4096];
-    ssize_t n = read(connfd, buffer, sizeof(buffer) - 1);
+    char buffer[MAX_ACCOUNT_REQUEST_BYTES + 1];
+    ssize_t n = read(connfd, buffer, sizeof(buffer));
     if (n <= 0) {
+        return;
+    }
+    if ((size_t)n > MAX_ACCOUNT_REQUEST_BYTES) {
+        const char *error_response = "HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        writefull(connfd, (void *)error_response, strlen(error_response));
         return;
     }
     buffer[n] = '\0';
@@ -1141,8 +1185,7 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
     struct shared_ptr *err = _ZNK17storeservicescore10URLRequest5errorEv(urlRequest);
     if (err->obj != NULL) {
         int code = _ZNK17storeservicescore19StoreErrorCondition9errorCodeEv(err->obj);
-        const char *what = _ZNK17storeservicescore19StoreErrorCondition4whatEv(err->obj);
-        fprintf(stderr, "[!] createMusicToken error: code=%d, message=%s\n", code, what ? what : "none");
+        fprintf(stderr, "[!] createMusicToken error: code=%d, message omitted\n", code);
         return NULL;
     }
     struct shared_ptr *urlResp = _ZNK17storeservicescore10URLRequest8responseEv(urlRequest);
@@ -1155,7 +1198,7 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
     if (json == NULL) {
         fprintf(stderr, "[!] createMusicToken error: invalid JSON response\n");
         if (respBody != NULL) {
-            fprintf(stderr, "[!] createMusicToken response preview: %.200s\n", respBody);
+            fprintf(stderr, "[!] createMusicToken response bytes: %zu\n", strlen(respBody));
         } else {
             fprintf(stderr, "[!] createMusicToken response body is empty\n");
         }
@@ -1166,9 +1209,12 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
     if (token == NULL) {
         const char *err_desc = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "error_description"));
         const char *err_code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "error"));
-        fprintf(stderr, "[!] createMusicToken failed: %s (%s)\n",
-                err_desc ? err_desc : "unknown error",
-                err_code ? err_code : "?");
+        fprintf(stderr, "[!] createMusicToken failed: error=%s, description bytes=%zu\n",
+                err_code ? err_code : "?",
+                err_desc ? strlen(err_desc) : 0);
+        if (err_desc != NULL) {
+            fprintf(stderr, "[!] createMusicToken error description omitted\n");
+        }
         cJSON_Delete(json);
         return NULL;
     }
@@ -1202,8 +1248,7 @@ char* get_dev_token(struct shared_ptr reqCtx) {
     struct shared_ptr *err = _ZNK17storeservicescore10URLRequest5errorEv(urlRequest);
     if (err->obj != NULL) {
         int code = _ZNK17storeservicescore19StoreErrorCondition9errorCodeEv(err->obj);
-        const char *what = _ZNK17storeservicescore19StoreErrorCondition4whatEv(err->obj);
-        fprintf(stderr, "[!] devToken error: code=%d, message=%s\n", code, what ? what : "none");
+        fprintf(stderr, "[!] devToken error: code=%d, message omitted\n", code);
         return NULL;
     }
     struct shared_ptr *urlResp = _ZNK17storeservicescore10URLRequest8responseEv(urlRequest);
@@ -1264,7 +1309,7 @@ void write_music_token(void) {
             return;
         }
         fclose(fp);
-        fprintf(stderr, "[+] Music-Token: %.14s...\n", token);
+        fprintf(stderr, "[+] Music token cache exists\n");
         return;
     }
     FILE *fp = fopen(path, "w");
@@ -1272,7 +1317,7 @@ void write_music_token(void) {
         perror("fopen MUSIC_TOKEN");
         return;
     }
-    fprintf(stderr, "[+] Music-Token: %.14s...\n", g_music_token);
+    fprintf(stderr, "[+] Music token cached\n");
     fprintf(fp, "%s", g_music_token);
     fclose(fp);
 }

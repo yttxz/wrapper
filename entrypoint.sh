@@ -28,8 +28,15 @@ run_login() {
     "$@"
 }
 
-if [ "$(stat -c %U "/app/rootfs/data")" != "root" ] || [ "$(stat -c %G "/app/rootfs/data")" != "root" ]; then
-  chown -R root:root "/app/rootfs/data"
+DATA_UID="$(stat -c %u "/app/rootfs/data")"
+DATA_GID="$(stat -c %g "/app/rootfs/data")"
+if [ "$DATA_UID" != "0" ] || [ "$DATA_GID" != "0" ]; then
+  if [ "${WRAPPER_CHOWN_DATA:-0}" = "1" ]; then
+    echo "Repairing rootfs/data ownership because WRAPPER_CHOWN_DATA=1."
+    chown -R root:root "/app/rootfs/data"
+  else
+    echo "Warning: rootfs/data is not owned by root; set WRAPPER_CHOWN_DATA=1 to repair ownership if startup fails." >&2
+  fi
 fi
 
 if [ ! -f "$TOKEN_DB_PATH" ]; then
