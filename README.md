@@ -139,6 +139,7 @@ When 2FA is requested, leave the container running and write the code from
 another terminal:
 
 ```sh
+cd wrapper
 echo -n 123456 > rootfs/data/data/com.apple.android.music/files/2fa.txt
 ```
 
