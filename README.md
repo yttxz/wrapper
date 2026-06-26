@@ -127,6 +127,14 @@ Build a local image:
 docker buildx build --platform linux/amd64 --load --tag wrapper:local .
 ```
 
+Docker builds verify downloaded build inputs before unpacking or installing
+them. The pinned inputs are:
+
+| Input | Pin |
+| --- | --- |
+| Android NDK | `android-ndk-r23b-linux.zip` with SHA-256 `c6e97f9c8cfe5b7be0a9e6c15af8e7a179475b7ded23e2d1c1fa0945d6fb4382` |
+| Android tzdata | `platform/system/timezone` commit `0470df3d38d8e08932ebbe08b3d8ec9bbdcd403f` with SHA-256 `479e83ca4d289b2ae3d08eb222a5167a3c8bff185f2ccac932458e96bd6489ee` |
+
 All examples below assume the current directory is the repository root. If you
 run from another directory, use the absolute mount path:
 
@@ -203,6 +211,7 @@ Download Android NDK r23b:
 
 ```sh
 curl -fLO https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
+echo "c6e97f9c8cfe5b7be0a9e6c15af8e7a179475b7ded23e2d1c1fa0945d6fb4382  android-ndk-r23b-linux.zip" | sha256sum -c -
 unzip -d . android-ndk-r23b-linux.zip
 ```
 

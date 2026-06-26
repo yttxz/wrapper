@@ -4,7 +4,9 @@ ARG RUNTIME_PLATFORM=linux/amd64
 FROM --platform=${BUILD_PLATFORM} debian:13.2 AS build
 ARG TARGET_ARCH=amd64
 ARG NDK_VERSION=23
-ARG ANDROID_TZDATA_URL=https://android.googlesource.com/platform/system/timezone/+/refs/heads/main/output_data/iana/tzdata?format=TEXT
+ARG ANDROID_NDK_SHA256=c6e97f9c8cfe5b7be0a9e6c15af8e7a179475b7ded23e2d1c1fa0945d6fb4382
+ARG ANDROID_TZDATA_COMMIT=0470df3d38d8e08932ebbe08b3d8ec9bbdcd403f
+ARG ANDROID_TZDATA_SHA256=479e83ca4d289b2ae3d08eb222a5167a3c8bff185f2ccac932458e96bd6489ee
 
 SHELL ["/bin/bash", "-c"]
 
@@ -24,6 +26,7 @@ RUN --mount=type=cache,target=/var/lib/apt,sharing=locked \
         gnupg
 
 RUN aria2c -o android-ndk-r${NDK_VERSION}b-linux.zip https://dl.google.com/android/repository/android-ndk-r${NDK_VERSION}b-linux.zip && \
+    echo "${ANDROID_NDK_SHA256}  android-ndk-r${NDK_VERSION}b-linux.zip" | sha256sum -c - && \
     unzip -q -d /app android-ndk-r${NDK_VERSION}b-linux.zip && \
     rm android-ndk-r${NDK_VERSION}b-linux.zip
 
@@ -33,8 +36,10 @@ RUN mkdir -p build && \
     cmake --build /app/build -j$(nproc)
 
 RUN mkdir -p /app/rootfs/system/usr/share/zoneinfo && \
-    aria2c -q -d /tmp -o android-tzdata.b64 "${ANDROID_TZDATA_URL}" && \
-    base64 --decode /tmp/android-tzdata.b64 > /app/rootfs/system/usr/share/zoneinfo/tzdata && \
+    aria2c -q -d /tmp -o android-tzdata.b64 "https://android.googlesource.com/platform/system/timezone/+/${ANDROID_TZDATA_COMMIT}/output_data/iana/tzdata?format=TEXT" && \
+    base64 --decode /tmp/android-tzdata.b64 > /tmp/android-tzdata && \
+    echo "${ANDROID_TZDATA_SHA256}  /tmp/android-tzdata" | sha256sum -c - && \
+    mv /tmp/android-tzdata /app/rootfs/system/usr/share/zoneinfo/tzdata && \
     rm /tmp/android-tzdata.b64
 
 FROM --platform=${RUNTIME_PLATFORM} debian:13.2
