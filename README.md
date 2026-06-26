@@ -3,9 +3,10 @@
 `wrapper` runs the Apple Music decryption engine from the bundled Linux/Android
 runtime. An active Apple Music subscription is still required.
 
-This fork keeps the Linux/Docker workflow and adds a macOS-friendly launcher.
-On macOS, the native `wrapper` command is only a convenience layer: the real
-Linux engine still runs inside Docker.
+This fork keeps the Linux/Docker workflow as the canonical runtime path and adds
+a macOS-friendly launcher as an optional convenience layer. On macOS, the native
+`wrapper` command does not run the engine natively; the real Linux engine still
+runs inside Docker.
 
 ## Platform Support
 
@@ -17,6 +18,7 @@ The functional engine is Linux-based.
 | Linux arm64 | Supported by the upstream project |
 | macOS Apple Silicon | Supported through Docker Desktop |
 | macOS Intel | Supported through Docker Desktop |
+| macOS launcher | Convenience wrapper around Docker |
 | Native macOS engine | Not supported |
 
 The bundled runtime in `rootfs/` contains Linux/Android ELF binaries. macOS
@@ -24,7 +26,7 @@ cannot load those binaries directly, so macOS support depends on Docker.
 
 ## What This Fork Adds
 
-- Docker-backed macOS launcher built from `macos-native.c`.
+- Optional Docker-backed macOS launcher built from `macos-native.c`.
 - CMake host detection for native macOS launcher builds.
 - Docker entrypoint support for first-login and normal service runs.
 - `scripts/doctor.sh` for runtime, Docker, port, and capability diagnostics.
@@ -67,6 +69,10 @@ rootfs/data/data/com.apple.android.music/files/2fa.txt
 
 ## Quick Start On macOS
 
+The direct Docker workflow below is the supported path for validation and bug
+reports. The native launcher is convenient for local use, but it is still just a
+Docker runner.
+
 Install Docker Desktop first, then build the native launcher:
 
 ```sh
@@ -91,6 +97,13 @@ On first run, the launcher checks for a local Docker image named
 `wrapper-macos:local`. If it is missing, the launcher builds it from this source
 tree, mounts `rootfs/data`, publishes the configured ports, and starts the Linux
 engine inside Docker.
+
+The launcher reuses an existing local image. Rebuild it after source or
+Dockerfile changes with:
+
+```sh
+WRAPPER_DOCKER_REBUILD=1 ./build-macos/wrapper
+```
 
 Use a custom image tag:
 

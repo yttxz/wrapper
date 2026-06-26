@@ -16,6 +16,7 @@
 #endif
 
 #define DEFAULT_DOCKER_IMAGE "wrapper-macos:local"
+#define DEFAULT_DOCKER_PLATFORM "linux/amd64"
 
 extern char **environ;
 
@@ -84,6 +85,17 @@ static int path_exists(const char *path) {
     return stat(path, &st) == 0;
 }
 
+static int env_flag_enabled(const char *name) {
+    const char *value = getenv(name);
+    if (value == NULL || value[0] == '\0') {
+        return 0;
+    }
+    return strcmp(value, "1") == 0 ||
+           strcmp(value, "true") == 0 ||
+           strcmp(value, "yes") == 0 ||
+           strcmp(value, "on") == 0;
+}
+
 static char *format_port_mapping(const char *host, int port) {
     int needed = snprintf(NULL, 0, "%s:%d:%d", host, port, port);
     if (needed < 0) {
@@ -130,15 +142,20 @@ static int should_skip_host_arg(int argc, char *argv[], int *index) {
 static int ensure_docker_image(const char *image) {
     char *inspect_argv[] = {"docker", "image", "inspect", (char *)image, NULL};
     int inspect_status = run_command(inspect_argv, 1);
-    if (inspect_status == 0) {
+    if (inspect_status == 0 && !env_flag_enabled("WRAPPER_DOCKER_REBUILD")) {
         return 0;
     }
 
-    fprintf(stderr, "[+] Docker image %s not found; building it from %s...\n",
-            image, WRAPPER_SOURCE_DIR);
+    if (inspect_status == 0) {
+        fprintf(stderr, "[+] rebuilding Docker image %s because WRAPPER_DOCKER_REBUILD is set\n",
+                image);
+    } else {
+        fprintf(stderr, "[+] Docker image %s not found; building it from %s...\n",
+                image, WRAPPER_SOURCE_DIR);
+    }
     char *build_argv[] = {
         "docker", "buildx", "build",
-        "--platform", "linux/amd64",
+        "--platform", DEFAULT_DOCKER_PLATFORM,
         "--load",
         "--tag", (char *)image,
         (char *)WRAPPER_SOURCE_DIR,
@@ -229,7 +246,7 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    char **docker_argv = calloc((size_t)argc + 24, sizeof(char *));
+    char **docker_argv = calloc((size_t)argc + 28, sizeof(char *));
     if (docker_argv == NULL) {
         perror("calloc");
         free(data_path);
@@ -244,6 +261,8 @@ int main(int argc, char *argv[]) {
     int out = 0;
     docker_argv[out++] = "docker";
     docker_argv[out++] = "run";
+    docker_argv[out++] = "--platform";
+    docker_argv[out++] = DEFAULT_DOCKER_PLATFORM;
     docker_argv[out++] = "--privileged";
     docker_argv[out++] = "--rm";
     docker_argv[out++] = "-i";
