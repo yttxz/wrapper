@@ -61,11 +61,16 @@ Normal service runs reuse these files and should not need `USERNAME` or
 `PASSWORD`. Provide credentials only for first login, when the token cache is
 missing, or when the saved session has expired.
 
-If a 2FA code is requested while running with `--code-from-file`, write it to:
+If a 2FA code is requested while running with `--code-from-file`, write the
+six-digit code to:
 
 ```text
 rootfs/data/data/com.apple.android.music/files/2fa.txt
 ```
+
+The code file is removed after the wrapper reads it. The default wait is 60
+seconds; set `WRAPPER_2FA_TIMEOUT_SECONDS` to a value from `1` to `600` to
+adjust it.
 
 ## Quick Start On macOS
 
@@ -160,9 +165,12 @@ When 2FA is requested, leave the container running and write the code from
 another terminal:
 
 ```sh
-cd wrapper
-echo -n 123456 > rootfs/data/data/com.apple.android.music/files/2fa.txt
+umask 077
+printf '%s' 123456 > rootfs/data/data/com.apple.android.music/files/2fa.txt
 ```
+
+Only exactly six digits are accepted. Empty or malformed code files are deleted
+and the wrapper keeps waiting until the 2FA timeout expires.
 
 Quit after login completes. Later service runs reuse the mounted account state
 and should not include credentials.

@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <ctype.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
@@ -20,6 +21,11 @@
 #ifndef MyRelease
 #include "dobby.h"
 #endif
+
+#define TWO_FACTOR_CODE_LENGTH 6
+#define TWO_FACTOR_DEFAULT_TIMEOUT_SECONDS 60
+#define TWO_FACTOR_MAX_TIMEOUT_SECONDS 600
+#define TWO_FACTOR_POLL_SECONDS 3
 
 static struct shared_ptr apInf;
 static uint8_t leaseMgr[16];
@@ -103,6 +109,70 @@ void install_hooks() {
 int file_exists(const char *filename) {
   struct stat buffer;   
   return (stat (filename, &buffer) == 0);
+}
+
+static int parse_timeout_seconds(const char *env_name, const int default_value,
+                                 const int max_value) {
+    const char *value = getenv(env_name);
+    if (value == NULL || value[0] == '\0') {
+        return default_value;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' ||
+        parsed < 1 || parsed > max_value) {
+        fprintf(stderr, "[!] ignoring invalid %s=%s; using %d seconds\n",
+                env_name, value, default_value);
+        return default_value;
+    }
+
+    return (int)parsed;
+}
+
+static int is_valid_2fa_code(const char *code) {
+    if (code == NULL || strlen(code) != TWO_FACTOR_CODE_LENGTH) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < TWO_FACTOR_CODE_LENGTH; i++) {
+        if (!isdigit((unsigned char)code[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int read_2fa_code_file(const char *path, char code[TWO_FACTOR_CODE_LENGTH + 1]) {
+    struct stat st;
+    if (stat(path, &st) == 0 && (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        fprintf(stderr, "[!] Warning: 2FA code file is accessible by group/other; use chmod 600 for %s\n",
+                path);
+    }
+
+    FILE *fp = fopen(path, "r");
+    if (fp == NULL) {
+        perror("fopen 2fa.txt");
+        return -1;
+    }
+
+    char raw[64] = {0};
+    int read_ok = fscanf(fp, "%63s", raw);
+    fclose(fp);
+    if (read_ok != 1) {
+        fprintf(stderr, "[!] 2FA code file is empty\n");
+        return 0;
+    }
+
+    if (!is_valid_2fa_code(raw)) {
+        fprintf(stderr, "[!] Invalid 2FA code; expected exactly %d digits\n",
+                TWO_FACTOR_CODE_LENGTH);
+        return 0;
+    }
+
+    memcpy(code, raw, TWO_FACTOR_CODE_LENGTH + 1);
+    return 1;
 }
 
 static int format_base_path(char *buffer, const size_t buffer_size,
@@ -212,49 +282,60 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
     char *password_with_code = NULL;
 
     if (need2FA) {
-        char code[7] = {0};
+        char code[TWO_FACTOR_CODE_LENGTH + 1] = {0};
         if (args_info.code_from_file_flag) {
-            fprintf(stderr, "[!] Enter your 2FA code into rootfs/%s/2fa.txt\n", args_info.base_dir_arg);
-            fprintf(stderr, "[!] Example command: echo -n 114514 > rootfs/%s/2fa.txt\n", args_info.base_dir_arg);
+            fprintf(stderr, "[!] Enter your 2FA code into rootfs%s/2fa.txt\n", args_info.base_dir_arg);
+            fprintf(stderr, "[!] Example command: umask 077; printf '%%s' 114514 > rootfs%s/2fa.txt\n", args_info.base_dir_arg);
             fprintf(stderr, "[!] Waiting for input...\n");
-            int count = 0;
             char path[1024];
             if (snprintf(path, sizeof(path), "%s/2fa.txt", args_info.base_dir_arg) >= (int)sizeof(path)) {
                 fprintf(stderr, "[!] 2FA path is too long\n");
                 exit(EXIT_FAILURE);
             }
-            while (1)
-            {
-                if (count >= 20) {
-                    fprintf(stderr, "[!] Failed to get 2FA Code in 60s. Exiting...\n");
-                    exit(EXIT_FAILURE);
-                }
+
+            int timeout_seconds = parse_timeout_seconds("WRAPPER_2FA_TIMEOUT_SECONDS",
+                                                        TWO_FACTOR_DEFAULT_TIMEOUT_SECONDS,
+                                                        TWO_FACTOR_MAX_TIMEOUT_SECONDS);
+            int waited_seconds = 0;
+            while (waited_seconds < timeout_seconds) {
                 if (file_exists(path)) {
-                    FILE *fp = fopen(path, "r");
-                    if (fp == NULL) {
-                        perror("fopen 2fa.txt");
+                    int read_result = read_2fa_code_file(path, code);
+                    if (remove(path) != 0 && errno != ENOENT) {
+                        perror("remove 2fa.txt");
+                    }
+                    if (read_result < 0) {
                         exit(EXIT_FAILURE);
                     }
-                    if (fscanf(fp, "%6s", code) != 1) {
-                        fclose(fp);
-                        fprintf(stderr, "[!] Failed to read 2FA code from file\n");
-                        exit(EXIT_FAILURE);
+                    if (read_result == 1) {
+                        fprintf(stderr, "[!] Code file detected! Logging in...\n");
+                        break;
                     }
-                    fclose(fp);
-                    remove(path);
-                    fprintf(stderr, "[!] Code file detected! Logging in...\n");
-                    break;
-                } else {
-                    sleep(3);
-                    count++;
                 }
+
+                int remaining = timeout_seconds - waited_seconds;
+                int sleep_seconds = remaining < TWO_FACTOR_POLL_SECONDS ? remaining : TWO_FACTOR_POLL_SECONDS;
+                sleep((unsigned int)sleep_seconds);
+                waited_seconds += sleep_seconds;
+            }
+
+            if (code[0] == '\0') {
+                fprintf(stderr, "[!] Failed to get a valid 2FA code in %d seconds. Exiting...\n",
+                        timeout_seconds);
+                exit(EXIT_FAILURE);
             }
         } else {
             printf("2FA code: ");
-            if (scanf("%6s", code) != 1) {
+            char input[64] = {0};
+            if (scanf("%63s", input) != 1) {
                 fprintf(stderr, "[!] Failed to read 2FA code\n");
                 exit(EXIT_FAILURE);
             }
+            if (!is_valid_2fa_code(input)) {
+                fprintf(stderr, "[!] Invalid 2FA code; expected exactly %d digits\n",
+                        TWO_FACTOR_CODE_LENGTH);
+                exit(EXIT_FAILURE);
+            }
+            memcpy(code, input, TWO_FACTOR_CODE_LENGTH + 1);
         }
 
         const size_t passLen = strlen(amPassword);
