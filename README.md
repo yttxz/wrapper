@@ -333,8 +333,20 @@ RUN_DOCKER_CHECKS=1 ./scripts/check.sh
 ```
 
 The extended check builds a `linux/amd64` image, verifies account state from
-`rootfs/data` is not baked into the image, and runs doctor diagnostics inside a
-privileged container.
+`rootfs/data` is not baked into the image, runs doctor diagnostics inside a
+privileged container, and runs the smoke test below.
+
+Run the Docker smoke test directly:
+
+```sh
+./scripts/smoke.sh
+```
+
+The smoke test builds an image, runs doctor in the container, and, when local
+account state exists, starts the service on localhost test ports and verifies
+that the account endpoint returns the expected JSON fields without printing
+token values. Override ports with `WRAPPER_SMOKE_DECRYPT_PORT`,
+`WRAPPER_SMOKE_M3U8_PORT`, and `WRAPPER_SMOKE_ACCOUNT_PORT`.
 
 ## Command-Line Options
 

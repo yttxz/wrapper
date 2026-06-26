@@ -14,6 +14,7 @@ if command -v sh >/dev/null 2>&1; then
   run sh -n entrypoint.sh
   run sh -n scripts/doctor.sh
   run sh -n scripts/check.sh
+  run sh -n scripts/smoke.sh
 fi
 
 run scripts/doctor.sh
@@ -46,6 +47,8 @@ if [ "${RUN_DOCKER_CHECKS:-0}" = "1" ]; then
   run docker run --platform linux/amd64 --privileged --rm \
     -v "$root/rootfs/data:/app/rootfs/data" \
     wrapper-check:local --doctor
+  run env WRAPPER_SMOKE_BUILD=0 WRAPPER_SMOKE_IMAGE=wrapper-check:local \
+    scripts/smoke.sh
 else
   printf '[warn] RUN_DOCKER_CHECKS=1 not set; skipping Docker build/container checks\n'
 fi
