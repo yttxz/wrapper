@@ -1,32 +1,26 @@
 # wrapper
 
 `wrapper` runs the Apple Music decryption engine from the bundled Linux/Android
-runtime. An active Apple Music subscription is still required.
+runtime. An active Apple Music subscription is required.
 
-This fork keeps the Linux/Docker workflow as the canonical runtime and release
-path. macOS users should run the same Linux container through Docker Desktop;
-there is no native macOS launcher or native macOS engine.
+The supported release path is Docker. macOS users should run the Linux container
+through Docker Desktop; this project does not ship a macOS-native executable.
 
 ## Platform Support
 
-The functional engine is Linux-based.
-
-| Platform | Status |
+| Runtime | Status |
 | --- | --- |
-| Linux x86_64 | Supported |
-| Linux arm64 | Supported by the upstream project |
-| macOS Apple Silicon | Supported through Docker Desktop |
-| macOS Intel | Supported through Docker Desktop |
-| Native macOS engine | Not supported |
+| Docker on Linux or macOS | Supported and recommended |
+| Native Linux x86_64 | Supported for advanced users |
+| Native Linux arm64 | Upstream-supported |
+| Native macOS | Not supported |
 
-The bundled runtime in `rootfs/` contains Linux/Android ELF binaries. macOS
-cannot load those binaries directly, so macOS support is Docker-only.
+`rootfs/` contains Linux/Android ELF binaries, so macOS support is Docker-only.
 
 ## What This Fork Adds
 
 - Docker entrypoint support for first-login and normal service runs.
-- `scripts/doctor.sh` for runtime, Docker, port, and capability diagnostics.
-- `scripts/check.sh` for local and Docker-backed validation.
+- Doctor, check, and smoke scripts for local and Docker-backed validation.
 - `rootfs/data` mounted at runtime instead of baked into Docker images.
 - Docker builds include Android timezone data required by the bundled bionic
   runtime.
@@ -34,7 +28,7 @@ cannot load those binaries directly, so macOS support is Docker-only.
 - Safer C paths around input parsing, path formatting, token/cache handling,
   account JSON formatting, sockets, offline channel probing, and cleanup.
 
-## Data Directory
+## Data And Login
 
 `rootfs/data` stores local account state, token caches, and app data. It is
 mounted into Docker containers and intentionally excluded from Docker images.
@@ -44,15 +38,10 @@ The Docker entrypoint does not recursively change ownership of mounted
 `rootfs/data` by default. If a moved or restored data directory has ownership
 that prevents startup, set `WRAPPER_CHOWN_DATA=1` for one repair run.
 
-The main account database lives under:
+Important account files:
 
 ```text
 rootfs/data/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb
-```
-
-Token caches are stored next to the Apple Music app data:
-
-```text
 rootfs/data/data/com.apple.android.music/files/STOREFRONT_ID
 rootfs/data/data/com.apple.android.music/files/MUSIC_TOKEN
 ```
@@ -61,30 +50,20 @@ Normal service runs reuse these files and should not need credentials. Provide
 `USERNAME` only for first login, when the token cache is missing, or when the
 saved session has expired. The password is prompted interactively and hidden.
 
-During login, a requested 2FA code is entered in the same terminal and the
-input is hidden. File-based 2FA is only used when explicitly requested with
-`--code-from-file`; set `WRAPPER_2FA_FROM_FILE=1` for Docker entrypoint runs
-that need that mode. In file mode, write the six-digit code to:
-
-```text
-rootfs/data/data/com.apple.android.music/files/2fa.txt
-```
-
-The code file must be a regular file, not a symlink, and readable only by the
-owner, such as with `chmod 600`. The code file is removed after the wrapper
-reads a valid, empty, or malformed code. The default wait is 60 seconds; set
-`WRAPPER_2FA_TIMEOUT_SECONDS` to a value from `1` to `600` to adjust it.
+During login, password and 2FA prompts are read from the terminal with input
+hidden. File-based 2FA is only used when explicitly requested with
+`--code-from-file` or `WRAPPER_2FA_FROM_FILE=1`.
 
 ## Docker Workflow
 
-The Docker workflow is the release path on Linux and macOS. On macOS, install
-Docker Desktop first. The default wrapper needs `--privileged` because it
-bind-mounts `/dev/urandom`, enters `rootfs`, mounts `/proc`, and starts the
-engine in a Linux runtime environment.
+Install Docker Desktop on macOS. The default container needs `--privileged`
+because the Linux wrapper prepares `/dev/urandom`, `rootfs`, `/proc`, and the
+bundled Linux runtime.
 
 Build a local image:
 
 ```sh
+cd path/to/wrapper
 docker buildx build --platform linux/amd64 --load --tag wrapper:local .
 ```
 
@@ -96,17 +75,11 @@ them. The pinned inputs are:
 | Android NDK | `android-ndk-r23b-linux.zip` with SHA-256 `c6e97f9c8cfe5b7be0a9e6c15af8e7a179475b7ded23e2d1c1fa0945d6fb4382` |
 | Android tzdata | `platform/system/timezone` commit `0470df3d38d8e08932ebbe08b3d8ec9bbdcd403f` with SHA-256 `479e83ca4d289b2ae3d08eb222a5167a3c8bff185f2ccac932458e96bd6489ee` |
 
-All examples below assume the current directory is the repository root. If you
-run from another directory, use the absolute mount path:
-
-```sh
--v "$HOME/Downloads/wrapper/rootfs/data:/app/rootfs/data"
-```
-
 Login when no account database exists, or refresh login when the token cache is
 missing or expired:
 
 ```sh
+cd path/to/wrapper
 read "APPLE_ID?Apple ID: "
 
 docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
@@ -125,19 +98,19 @@ For legacy non-interactive login, set both `WRAPPER_PASSWORD_FROM_ENV=1` and
 `PASSWORD`. This exposes the password through Docker environment and wrapper
 process arguments, so prefer the interactive prompt.
 
-For detached or non-interactive login, or if you prefer the file handoff,
-explicitly add `-e WRAPPER_2FA_FROM_FILE=1` to the Docker command and write the
-code from another terminal:
+For detached 2FA handoff, add `-e WRAPPER_2FA_FROM_FILE=1` to the Docker command
+and write the six-digit code from another terminal:
 
 ```sh
+cd path/to/wrapper
 umask 077
 printf '%s' 123456 > rootfs/data/data/com.apple.android.music/files/2fa.txt
 ```
 
-Only exactly six digits are accepted. The file must be a regular, non-symlink
-file readable only by its owner. In file mode, empty or malformed code files
-are deleted and the wrapper keeps waiting until the 2FA timeout expires; unsafe
-handoff files are refused.
+The 2FA file must be a regular, non-symlink file readable only by its owner.
+Empty or malformed files are deleted and the wrapper keeps waiting; unsafe files
+are refused. The default wait is 60 seconds. Set `WRAPPER_2FA_TIMEOUT_SECONDS`
+to `1` through `600` to adjust it.
 
 Quit after login completes. Later service runs reuse the mounted account state
 and should not include credentials.
@@ -145,6 +118,7 @@ and should not include credentials.
 Run the service:
 
 ```sh
+cd path/to/wrapper
 docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
   -p 127.0.0.1:10020:10020 \
@@ -157,8 +131,8 @@ The published host ports are bound to `127.0.0.1`. Inside the container, the
 entrypoint binds the Linux service to `0.0.0.0` so Docker can forward those
 localhost-only host ports into the container.
 
-The M3U8 service uses the offline/download channel when the account reports that
-it is available. To force the streaming channel instead, add:
+The M3U8 service uses the offline/download channel when available. To force the
+streaming channel, add:
 
 ```sh
 -e WRAPPER_DISABLE_OFFLINE=1
@@ -167,12 +141,15 @@ it is available. To force the streaming channel instead, add:
 Run diagnostics inside Docker:
 
 ```sh
+cd path/to/wrapper
 docker run --platform linux/amd64 --privileged --rm \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
   wrapper:local --doctor
 ```
 
 ## Linux Workflow
+
+Native Linux builds are useful for development, but Docker is the release path.
 
 Install build dependencies:
 
@@ -189,6 +166,7 @@ sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
 Download Android NDK r23b:
 
 ```sh
+cd path/to/wrapper
 curl -fLO https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
 echo "c6e97f9c8cfe5b7be0a9e6c15af8e7a179475b7ded23e2d1c1fa0945d6fb4382  android-ndk-r23b-linux.zip" | sha256sum -c -
 unzip -d . android-ndk-r23b-linux.zip
@@ -197,6 +175,7 @@ unzip -d . android-ndk-r23b-linux.zip
 Build:
 
 ```sh
+cd path/to/wrapper
 mkdir build
 cd build
 cmake ..
@@ -246,11 +225,12 @@ token-bearing responses are processed:
 | M3U8 adam ID | 32 bytes |
 | Account HTTP request | 4 KiB |
 
-## Diagnostics
+## Diagnostics And Checks
 
 Run the doctor script from the source tree:
 
 ```sh
+cd path/to/wrapper
 ./scripts/doctor.sh
 ```
 
@@ -269,11 +249,10 @@ Warnings are not always fatal. For example, the engine binary can be missing
 from the source tree before a Docker build because Docker generates it inside
 the image. Port warnings mean something is already listening on that port.
 
-## Development Checks
-
-Run the local smoke check:
+Run local checks:
 
 ```sh
+cd path/to/wrapper
 ./scripts/check.sh
 ```
 
@@ -281,9 +260,10 @@ This checks shell syntax, C syntax, doctor diagnostics, and basic wrapper
 commands. On macOS, Docker Desktop must be running because doctor diagnostics
 check Docker availability.
 
-Run the full Docker-backed check before publishing Linux/Docker changes:
+Run full Docker-backed checks before publishing Linux/Docker changes:
 
 ```sh
+cd path/to/wrapper
 RUN_DOCKER_CHECKS=1 ./scripts/check.sh
 ```
 
@@ -294,6 +274,7 @@ privileged container, and runs the smoke test below.
 Run the Docker smoke test directly:
 
 ```sh
+cd path/to/wrapper
 ./scripts/smoke.sh
 ```
 
