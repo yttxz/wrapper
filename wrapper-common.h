@@ -13,6 +13,21 @@
 #include <unistd.h>
 
 extern pid_t child_proc;
+extern char **environ;
+
+static inline int wrapper_set_android_environment(void) {
+    if (setenv("ANDROID_ROOT", "/system", 1) != 0) {
+        perror("setenv ANDROID_ROOT");
+        return -1;
+    }
+
+    if (setenv("ANDROID_DATA", "/data", 1) != 0) {
+        perror("setenv ANDROID_DATA");
+        return -1;
+    }
+
+    return 0;
+}
 
 static inline void wrapper_forward_sigint(int signum) {
     (void)signum;

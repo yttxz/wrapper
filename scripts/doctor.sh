@@ -139,6 +139,7 @@ token_db="$music_files/mpl_db/kvs.sqlitedb"
 storefront_id="$music_files/STOREFRONT_ID"
 music_token="$music_files/MUSIC_TOKEN"
 engine="$root/rootfs/system/bin/main"
+tzdata="$root/rootfs/system/usr/share/zoneinfo/tzdata"
 
 printf 'wrapper doctor\n'
 printf 'project root: %s\n\n' "$root"
@@ -160,6 +161,21 @@ fi
 
 check_optional_file "$storefront_id" "storefront cache"
 check_optional_file "$music_token" "music token cache"
+
+if [ -s "$tzdata" ]; then
+  tzdata_magic=$(dd if="$tzdata" bs=6 count=1 2>/dev/null)
+  if [ "$tzdata_magic" = "tzdata" ]; then
+    ok "Android timezone database exists: $tzdata"
+  else
+    fail "Android timezone database has unexpected format: $tzdata"
+  fi
+else
+  if [ ! -e "$engine" ] && [ -f "$root/Dockerfile" ]; then
+    warn "Android timezone database is not present in source tree before Docker build"
+  else
+    fail "Android timezone database missing or empty: $tzdata"
+  fi
+fi
 
 if [ -e "$engine" ]; then
   if [ -x "$engine" ]; then

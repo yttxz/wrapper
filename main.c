@@ -1026,6 +1026,11 @@ char *get_music_user_token(char *guid, char *authToken, struct shared_ptr reqCtx
     cJSON *json = cJSON_Parse(respBody);
     if (json == NULL) {
         fprintf(stderr, "[!] createMusicToken error: invalid JSON response\n");
+        if (respBody != NULL) {
+            fprintf(stderr, "[!] createMusicToken response preview: %.200s\n", respBody);
+        } else {
+            fprintf(stderr, "[!] createMusicToken response body is empty\n");
+        }
         return NULL;
     }
     cJSON *token_obj = cJSON_GetObjectItemCaseSensitive(json, "music_token");
@@ -1145,10 +1150,26 @@ void write_music_token(void) {
 }
 
 int offline_available() {
-    struct shared_ptr fairplay;
+    struct shared_ptr fairplay = {.obj = NULL, .ctrl_blk = NULL};
     _ZN17storeservicescore14RequestContext8fairPlayEv(&fairplay, reqCtx.obj);
+    if (fairplay.obj == NULL) {
+        fprintf(stderr, "[.] offline channel unavailable: missing FairPlay context\n");
+        return 0;
+    }
+
     struct std_vector fairplay_status = _ZN17storeservicescore8FairPlay21getSubscriptionStatusEv(fairplay.obj);
-    char *begin_ptr = (char*)fairplay_status.begin;
+    char *begin_ptr = (char *)fairplay_status.begin;
+    char *end_ptr = (char *)fairplay_status.end;
+    if (begin_ptr == NULL || end_ptr == NULL || end_ptr <= begin_ptr) {
+        fprintf(stderr, "[.] offline channel unavailable: empty FairPlay status\n");
+        return 0;
+    }
+
+    if ((end_ptr - begin_ptr) < 32) {
+        fprintf(stderr, "[.] offline channel unavailable: incomplete FairPlay status\n");
+        return 0;
+    }
+
     char *second_item_ptr = begin_ptr + 16;
     int state = *(int*)((char*)second_item_ptr + 8);
     if (state == 2 || state == 3) { // kFPSubscriptionCanPlayContent, kFPSubscriptionCanStreamAndPlayContent
@@ -1175,6 +1196,7 @@ int main(int argc, char *argv[]) {
 
     init();
     reqCtx = init_ctx();
+    fprintf(stderr, "[+] ctx initialized\n");
     if (args_info.login_given) {
         char *separator = strchr(args_info.login_arg, ':');
         if (separator == NULL || separator == args_info.login_arg || separator[1] == '\0') {
@@ -1189,16 +1211,26 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "[!] login failed\n");
         return EXIT_FAILURE;
     }
+    fprintf(stderr, "[+] requesting playback lease...\n");
     _ZN22SVPlaybackLeaseManagerC2ERKNSt6__ndk18functionIFvRKiEEERKNS1_IFvRKNS0_10shared_ptrIN17storeservicescore19StoreErrorConditionEEEEEE(
         leaseMgr, &endLeaseCallback, &pbErrCallback);
     uint8_t autom = 1;
     _ZN22SVPlaybackLeaseManager25refreshLeaseAutomaticallyERKb(leaseMgr, &autom);
     _ZN22SVPlaybackLeaseManager12requestLeaseERKb(leaseMgr, &autom);
     FHinstance = _ZN21SVFootHillSessionCtrl8instanceEv();
+    fprintf(stderr, "[+] playback lease requested\n");
 
-    offlineFlag = offline_available();
+    const char *disable_offline = getenv("WRAPPER_DISABLE_OFFLINE");
+    if (disable_offline != NULL && strcmp(disable_offline, "1") == 0) {
+        offlineFlag = 0;
+        fprintf(stderr, "[.] offline channel disabled by WRAPPER_DISABLE_OFFLINE\n");
+    } else {
+        offlineFlag = offline_available();
+    }
     if (offlineFlag) {
         fprintf(stderr, "[+] This account supports offline channel\n");
+    } else {
+        fprintf(stderr, "[.] using streaming channel\n");
     }
 
     // Cache account info

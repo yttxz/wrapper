@@ -30,9 +30,11 @@ cannot load those binaries directly, so macOS support depends on Docker.
 - `scripts/doctor.sh` for runtime, Docker, port, and capability diagnostics.
 - `scripts/check.sh` for local and Docker-backed validation.
 - `rootfs/data` mounted at runtime instead of baked into Docker images.
+- Docker builds include Android timezone data required by the bundled bionic
+  runtime.
 - Shared common setup code for the privileged Linux wrapper and rootless wrapper.
 - Safer C paths around input parsing, path formatting, token/cache handling,
-  account JSON formatting, sockets, and cleanup.
+  account JSON formatting, sockets, offline channel probing, and cleanup.
 
 ## Data Directory
 
@@ -46,8 +48,18 @@ The main account database lives under:
 rootfs/data/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb
 ```
 
-On first login, provide `USERNAME` and `PASSWORD`. If a 2FA code is requested
-while running with `--code-from-file`, write it to:
+Token caches are stored next to the Apple Music app data:
+
+```text
+rootfs/data/data/com.apple.android.music/files/STOREFRONT_ID
+rootfs/data/data/com.apple.android.music/files/MUSIC_TOKEN
+```
+
+Normal service runs reuse these files and should not need `USERNAME` or
+`PASSWORD`. Provide credentials only for first login, when the token cache is
+missing, or when the saved session has expired.
+
+If a 2FA code is requested while running with `--code-from-file`, write it to:
 
 ```text
 rootfs/data/data/com.apple.android.music/files/2fa.txt
@@ -99,30 +111,56 @@ mounts `/proc`, and starts the engine in a Linux runtime environment.
 Build a local image:
 
 ```sh
-docker build --platform linux/amd64 --tag wrapper:local .
+docker buildx build --platform linux/amd64 --load --tag wrapper:local .
 ```
 
-Login when no account database exists:
+All examples below assume the current directory is the repository root. If you
+run from another directory, use the absolute mount path:
 
 ```sh
-docker run --platform linux/amd64 --privileged --rm -it \
+-v "$HOME/Downloads/wrapper/rootfs/data:/app/rootfs/data"
+```
+
+Login when no account database exists, or refresh login when the token cache is
+missing or expired:
+
+```sh
+read "APPLE_ID?Apple ID: "
+read -rs "APPLE_PASSWORD?Password: "; echo
+
+docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
-  -e USERNAME="username" \
-  -e PASSWORD="password" \
+  -e USERNAME="$APPLE_ID" \
+  -e PASSWORD="$APPLE_PASSWORD" \
   wrapper:local
 ```
 
-Quit after login completes. Later service runs reuse the mounted account state.
+When 2FA is requested, leave the container running and write the code from
+another terminal:
+
+```sh
+echo -n 123456 > rootfs/data/data/com.apple.android.music/files/2fa.txt
+```
+
+Quit after login completes. Later service runs reuse the mounted account state
+and should not include credentials.
 
 Run the service:
 
 ```sh
-docker run --platform linux/amd64 --privileged --rm -it \
+docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
   -p 127.0.0.1:10020:10020 \
   -p 127.0.0.1:20020:20020 \
   -p 127.0.0.1:30020:30020 \
   wrapper:local
+```
+
+The M3U8 service uses the offline/download channel when the account reports that
+it is available. To force the streaming channel instead, add:
+
+```sh
+-e WRAPPER_DISABLE_OFFLINE=1
 ```
 
 Run diagnostics inside Docker:
@@ -189,6 +227,10 @@ The account info endpoint returns JSON with `storefront_id`, `dev_token`, and
 `music_token`. Responses are built with `cJSON` so token strings are escaped as
 valid JSON.
 
+The M3U8 URL service chooses the offline/download channel when available and
+falls back to the streaming playback channel otherwise. Set
+`WRAPPER_DISABLE_OFFLINE=1` in the container environment to force streaming.
+
 ## Diagnostics
 
 Run the doctor script from the source tree:
@@ -208,6 +250,7 @@ The doctor checks:
 - required `rootfs` files
 - `rootfs/data` account directory
 - account database and token cache files
+- Android timezone database availability
 - Docker CLI and Docker daemon access
 - expected Docker image platform
 - default service ports

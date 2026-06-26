@@ -92,8 +92,20 @@ int main(int argc, char *argv[], char *envp[]) {
     }
 
     if (child_proc > 0) {
-        wait(NULL);
-        return 0;
+        int status;
+        if (waitpid(child_proc, &status, 0) == -1) {
+            perror("waitpid");
+            return 1;
+        }
+        if (WIFEXITED(status)) {
+            return WEXITSTATUS(status);
+        }
+        if (WIFSIGNALED(status)) {
+            int signal_number = WTERMSIG(status);
+            fprintf(stderr, "[!] child terminated by signal %d\n", signal_number);
+            return 128 + signal_number;
+        }
+        return 1;
     }
 
     if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
@@ -105,7 +117,11 @@ int main(int argc, char *argv[], char *envp[]) {
         return 1;
     }
 
-    execve("/system/bin/main", argv, envp);
+    if (wrapper_set_android_environment() != 0) {
+        return 1;
+    }
+
+    execve("/system/bin/main", argv, environ);
     
     perror("execve");
     return 1;
