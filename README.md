@@ -57,9 +57,9 @@ rootfs/data/data/com.apple.android.music/files/STOREFRONT_ID
 rootfs/data/data/com.apple.android.music/files/MUSIC_TOKEN
 ```
 
-Normal service runs reuse these files and should not need `USERNAME` or
-`PASSWORD`. Provide credentials only for first login, when the token cache is
-missing, or when the saved session has expired.
+Normal service runs reuse these files and should not need credentials. Provide
+`USERNAME` only for first login, when the token cache is missing, or when the
+saved session has expired. The password is prompted interactively and hidden.
 
 During login, a requested 2FA code is entered in the same terminal and the
 input is hidden. File-based 2FA is only used when explicitly requested with
@@ -108,17 +108,22 @@ missing or expired:
 
 ```sh
 read "APPLE_ID?Apple ID: "
-read -rs "APPLE_PASSWORD?Password: "; echo
 
 docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
   -e USERNAME="$APPLE_ID" \
-  -e PASSWORD="$APPLE_PASSWORD" \
   wrapper:local
 ```
 
+When the password is requested, enter it at the container prompt. The password
+is read like a password and is not echoed to the terminal.
+
 When 2FA is requested, enter the code at the container prompt. The code is read
 like a password and is not echoed to the terminal.
+
+For legacy non-interactive login, set both `WRAPPER_PASSWORD_FROM_ENV=1` and
+`PASSWORD`. This exposes the password through Docker environment and wrapper
+process arguments, so prefer the interactive prompt.
 
 For detached or non-interactive login, or if you prefer the file handoff,
 explicitly add `-e WRAPPER_2FA_FROM_FILE=1` to the Docker command and write the
@@ -310,7 +315,7 @@ Usage: wrapper [OPTION]...
   -M, --m3u8-port=INT       M3U8 service port (default: 20020)
   -A, --account-port=INT    Account service port (default: 30020)
   -P, --proxy=STRING        Proxy string (default: empty)
-  -L, --login=STRING        Login in username:password format
+  -L, --login=STRING        Login username; prompts for password
   -F, --code-from-file      Read 2FA code from 2fa.txt instead of prompting
   -B, --base-dir=STRING     Runtime data directory
   -I, --device-info=STRING  Slash-separated device identity fields

@@ -41,7 +41,7 @@ const char *gengetopt_args_info_help[] = {
   "  -M, --m3u8-port=INT         (default=`20020')",
   "  -A, --account-port=INT      (default=`30020')",
   "  -P, --proxy=STRING          (default=`')",
-  "  -L, --login=STRING        username:password",
+  "  -L, --login=STRING        username, or legacy username:password",
   "  -F, --code-from-file        (default=off)",
   "  -B, --base-dir=STRING     \n                              (default=`/data/data/com.apple.android.music/files')",
   "  -I, --device-info=STRING  \n                              ClientIdentifier/VersionIdentifier/PlatformIdentifier/ProductVersion/DeviceModel/BuildVersion/LocaleIdentifier/LanguageIdentifier/AndroidID\n                              (default=`Music/4.9/Android/10/Samsung\n                              S9/7663313/en-US/en-US/dc28071e981c439e')",
@@ -627,7 +627,7 @@ cmdline_parser_internal (
             goto failure;
         
           break;
-        case 'L':	/* username:password.  */
+        case 'L':	/* username, or legacy username:password.  */
         
         
           if (update_arg( (void *)&(args_info->login_arg), 

@@ -29,6 +29,7 @@
 #define TWO_FACTOR_MAX_TIMEOUT_SECONDS 600
 #define TWO_FACTOR_MAX_FILE_BYTES 64
 #define TWO_FACTOR_POLL_SECONDS 3
+#define PASSWORD_MAX_INPUT_BYTES 1024
 #define MAX_DECRYPT_ADAM_ID_BYTES 32
 #define MAX_DECRYPT_KEY_URI_BYTES 240
 #define MAX_DECRYPT_SAMPLE_BYTES (16U * 1024U * 1024U)
@@ -40,6 +41,7 @@ static uint8_t leaseMgr[16];
 static struct shared_ptr reqCtx;
 struct gengetopt_args_info args_info;
 char *amUsername, *amPassword;
+static int amPasswordNeedsFree;
 struct shared_ptr GUID;
 int decryptCount = 1000;
 int offlineFlag;
@@ -263,13 +265,14 @@ static int read_2fa_code_file(const char *path, char code[TWO_FACTOR_CODE_LENGTH
     return 1;
 }
 
-static int read_hidden_line(const char *prompt, char *buffer, size_t buffer_size) {
+static int read_hidden_line(const char *prompt, const char *non_tty_message,
+                            char *buffer, size_t buffer_size) {
     if (buffer == NULL || buffer_size == 0) {
         return 0;
     }
 
     if (!isatty(STDIN_FILENO)) {
-        fprintf(stderr, "[!] stdin is not a TTY; rerun interactively or use --code-from-file explicitly\n");
+        fprintf(stderr, "[!] %s\n", non_tty_message);
         return 0;
     }
 
@@ -309,6 +312,51 @@ static int read_hidden_line(const char *prompt, char *buffer, size_t buffer_size
 
     buffer[strcspn(buffer, "\r\n")] = '\0';
     return 1;
+}
+
+static void clear_sensitive_buffer(char *buffer, size_t size) {
+    volatile unsigned char *ptr = (volatile unsigned char *)buffer;
+    while (size-- > 0) {
+        *ptr++ = 0;
+    }
+}
+
+static void prompt_for_password_if_needed(void) {
+    if (amPassword != NULL) {
+        return;
+    }
+
+    char input[PASSWORD_MAX_INPUT_BYTES] = {0};
+    if (!read_hidden_line("Password: ",
+                          "stdin is not a TTY; rerun interactively or use legacy --login=username:password explicitly",
+                          input, sizeof(input))) {
+        clear_sensitive_buffer(input, sizeof(input));
+        fprintf(stderr, "[!] Failed to read password\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (input[0] == '\0') {
+        clear_sensitive_buffer(input, sizeof(input));
+        fprintf(stderr, "[!] password must not be empty\n");
+        exit(EXIT_FAILURE);
+    }
+
+    amPassword = strdup(input);
+    clear_sensitive_buffer(input, sizeof(input));
+    if (amPassword == NULL) {
+        perror("strdup password");
+        exit(EXIT_FAILURE);
+    }
+    amPasswordNeedsFree = 1;
+}
+
+static void clear_prompted_password(void) {
+    if (amPasswordNeedsFree && amPassword != NULL) {
+        clear_sensitive_buffer(amPassword, strlen(amPassword));
+        free(amPassword);
+        amPassword = NULL;
+        amPasswordNeedsFree = 0;
+    }
 }
 
 static int format_base_path(char *buffer, const size_t buffer_size,
@@ -409,10 +457,7 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
             credReqHandler->obj)),
         need2FA ? "true" : "false");
 
-    if (amPassword == NULL) {
-        fprintf(stderr, "[!] password is not available for credential request\n");
-        exit(EXIT_FAILURE);
-    }
+    prompt_for_password_if_needed();
 
     const char *password_value = amPassword;
     char *password_with_code = NULL;
@@ -461,7 +506,9 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
             }
         } else {
             char input[64] = {0};
-            if (!read_hidden_line("2FA code: ", input, sizeof(input))) {
+            if (!read_hidden_line("2FA code: ",
+                                  "stdin is not a TTY; rerun interactively or use --code-from-file explicitly",
+                                  input, sizeof(input))) {
                 fprintf(stderr, "[!] Failed to read 2FA code\n");
                 exit(EXIT_FAILURE);
             }
@@ -473,14 +520,14 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
             memcpy(code, input, TWO_FACTOR_CODE_LENGTH + 1);
         }
 
-        const size_t passLen = strlen(amPassword);
+        const size_t passLen = strlen(password_value);
         const size_t codeLen = strlen(code);
         password_with_code = malloc(passLen + codeLen + 1);
         if (password_with_code == NULL) {
             perror("malloc");
             exit(EXIT_FAILURE);
         }
-        memcpy(password_with_code, amPassword, passLen);
+        memcpy(password_with_code, password_value, passLen);
         memcpy(password_with_code + passLen, code, codeLen + 1);
         password_value = password_with_code;
     }
@@ -1443,17 +1490,25 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "[+] ctx initialized\n");
     if (args_info.login_given) {
         char *separator = strchr(args_info.login_arg, ':');
-        if (separator == NULL || separator == args_info.login_arg || separator[1] == '\0') {
-            fprintf(stderr, "[!] login must be in username:password format\n");
+        if (args_info.login_arg[0] == '\0' || separator == args_info.login_arg) {
+            fprintf(stderr, "[!] login username must not be empty\n");
             return EXIT_FAILURE;
         }
-        *separator = '\0';
         amUsername = args_info.login_arg;
-        amPassword = separator + 1;
+        if (separator != NULL) {
+            *separator = '\0';
+            if (separator[1] != '\0') {
+                amPassword = separator + 1;
+            }
+        }
     }
-    if (args_info.login_given && !login(reqCtx)) {
-        fprintf(stderr, "[!] login failed\n");
-        return EXIT_FAILURE;
+    if (args_info.login_given) {
+        if (!login(reqCtx)) {
+            clear_prompted_password();
+            fprintf(stderr, "[!] login failed\n");
+            return EXIT_FAILURE;
+        }
+        clear_prompted_password();
     }
     fprintf(stderr, "[+] requesting playback lease...\n");
     _ZN22SVPlaybackLeaseManagerC2ERKNSt6__ndk18functionIFvRKiEEERKNS1_IFvRKNS0_10shared_ptrIN17storeservicescore19StoreErrorConditionEEEEEE(

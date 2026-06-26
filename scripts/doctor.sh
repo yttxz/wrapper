@@ -151,11 +151,14 @@ check_path "$music_files" "Apple Music data directory"
 if [ -s "$token_db" ]; then
   ok "account database exists"
 else
-  if [ -n "${USERNAME:-}" ] && [ -n "${PASSWORD:-}" ]; then
-    ok "account database is missing, but USERNAME and PASSWORD are set for login"
+  if [ -n "${USERNAME:-}" ]; then
+    ok "account database is missing, but USERNAME is set for interactive login"
+    if [ "${WRAPPER_PASSWORD_FROM_ENV:-0}" = "1" ] && [ -z "${PASSWORD:-}" ]; then
+      warn "WRAPPER_PASSWORD_FROM_ENV=1 is set, but PASSWORD is empty"
+    fi
   else
     warn "account database missing: $token_db"
-    warn "set USERNAME and PASSWORD for first login, or mount the populated rootfs/data directory"
+    warn "set USERNAME for first login, or mount the populated rootfs/data directory"
   fi
 fi
 

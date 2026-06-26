@@ -54,9 +54,9 @@ struct gengetopt_args_info
   char * proxy_arg;	/**< @brief  (default='').  */
   char * proxy_orig;	/**< @brief  original value given at command line.  */
   const char *proxy_help; /**< @brief  help description.  */
-  char * login_arg;	/**< @brief username:password.  */
-  char * login_orig;	/**< @brief username:password original value given at command line.  */
-  const char *login_help; /**< @brief username:password help description.  */
+  char * login_arg;	/**< @brief username, or legacy username:password.  */
+  char * login_orig;	/**< @brief username, or legacy username:password original value given at command line.  */
+  const char *login_help; /**< @brief username, or legacy username:password help description.  */
   int code_from_file_flag;	/**< @brief  (default=off).  */
   const char *code_from_file_help; /**< @brief  help description.  */
   char * base_dir_arg;	/**< @brief  (default='/data/data/com.apple.android.music/files').  */
