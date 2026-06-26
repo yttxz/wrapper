@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <termios.h>
 
 #include "import.h"
 #include "cmdline.h"
@@ -175,6 +176,53 @@ static int read_2fa_code_file(const char *path, char code[TWO_FACTOR_CODE_LENGTH
     return 1;
 }
 
+static int read_hidden_line(const char *prompt, char *buffer, size_t buffer_size) {
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+
+    fprintf(stderr, "%s", prompt);
+    fflush(stderr);
+
+    int echo_disabled = 0;
+    struct termios old_termios;
+    if (isatty(STDIN_FILENO)) {
+        if (tcgetattr(STDIN_FILENO, &old_termios) != 0) {
+            perror("tcgetattr");
+            fprintf(stderr, "\n");
+            return 0;
+        }
+
+        struct termios new_termios = old_termios;
+        new_termios.c_lflag &= ~(ECHO);
+        if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_termios) != 0) {
+            perror("tcsetattr");
+            fprintf(stderr, "\n");
+            return 0;
+        }
+        echo_disabled = 1;
+    } else {
+        fprintf(stderr, "[!] stdin is not a TTY; use --code-from-file to avoid visible 2FA input\n");
+    }
+
+    int ok = fgets(buffer, buffer_size, stdin) != NULL;
+    int saved_errno = errno;
+
+    if (echo_disabled && tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_termios) != 0) {
+        perror("tcsetattr restore");
+        ok = 0;
+    }
+    fprintf(stderr, "\n");
+
+    errno = saved_errno;
+    if (!ok) {
+        return 0;
+    }
+
+    buffer[strcspn(buffer, "\r\n")] = '\0';
+    return 1;
+}
+
 static int format_base_path(char *buffer, const size_t buffer_size,
                             const char *suffix) {
     const int needed = snprintf(buffer, buffer_size, "%s%s",
@@ -324,9 +372,8 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
                 exit(EXIT_FAILURE);
             }
         } else {
-            printf("2FA code: ");
             char input[64] = {0};
-            if (scanf("%63s", input) != 1) {
+            if (!read_hidden_line("2FA code: ", input, sizeof(input))) {
                 fprintf(stderr, "[!] Failed to read 2FA code\n");
                 exit(EXIT_FAILURE);
             }

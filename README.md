@@ -61,8 +61,10 @@ Normal service runs reuse these files and should not need `USERNAME` or
 `PASSWORD`. Provide credentials only for first login, when the token cache is
 missing, or when the saved session has expired.
 
-If a 2FA code is requested while running with `--code-from-file`, write the
-six-digit code to:
+During interactive login, a requested 2FA code is entered in the same terminal
+and the input is hidden. Detached or non-interactive Docker runs use
+`--code-from-file`; set `WRAPPER_2FA_FROM_FILE=1` to force that mode in an
+interactive run. In file mode, write the six-digit code to:
 
 ```text
 rootfs/data/data/com.apple.android.music/files/2fa.txt
@@ -161,7 +163,11 @@ docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
   wrapper:local
 ```
 
-When 2FA is requested, leave the container running and write the code from
+When 2FA is requested, enter the code at the container prompt. The code is read
+like a password and is not echoed to the terminal.
+
+For detached or non-interactive login, or if you prefer the file handoff, add
+`-e WRAPPER_2FA_FROM_FILE=1` to the Docker command and write the code from
 another terminal:
 
 ```sh
@@ -169,8 +175,8 @@ umask 077
 printf '%s' 123456 > rootfs/data/data/com.apple.android.music/files/2fa.txt
 ```
 
-Only exactly six digits are accepted. Empty or malformed code files are deleted
-and the wrapper keeps waiting until the 2FA timeout expires.
+Only exactly six digits are accepted. In file mode, empty or malformed code
+files are deleted and the wrapper keeps waiting until the 2FA timeout expires.
 
 Quit after login completes. Later service runs reuse the mounted account state
 and should not include credentials.
@@ -326,7 +332,7 @@ Usage: wrapper [OPTION]...
   -A, --account-port=INT    Account service port (default: 30020)
   -P, --proxy=STRING        Proxy string (default: empty)
   -L, --login=STRING        Login in username:password format
-  -F, --code-from-file      Read 2FA code from 2fa.txt
+  -F, --code-from-file      Read 2FA code from 2fa.txt instead of prompting
   -B, --base-dir=STRING     Runtime data directory
   -I, --device-info=STRING  Slash-separated device identity fields
 ```

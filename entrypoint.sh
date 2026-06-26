@@ -13,6 +13,21 @@ if [ ! -d "/app/rootfs/data/data/com.apple.android.music/files" ]; then
   mkdir -p "/app/rootfs/data/data/com.apple.android.music/files"
 fi
 
+run_login() {
+  if [ -t 0 ] && [ "${WRAPPER_2FA_FROM_FILE:-0}" != "1" ]; then
+    exec ./wrapper \
+      -L "${USERNAME}:${PASSWORD}" \
+      -H 0.0.0.0 \
+      "$@"
+  fi
+
+  exec ./wrapper \
+    -L "${USERNAME}:${PASSWORD}" \
+    -F \
+    -H 0.0.0.0 \
+    "$@"
+}
+
 if [ "$(stat -c %U "/app/rootfs/data")" != "root" ] || [ "$(stat -c %G "/app/rootfs/data")" != "root" ]; then
   chown -R root:root "/app/rootfs/data"
 fi
@@ -23,19 +38,11 @@ if [ ! -f "$TOKEN_DB_PATH" ]; then
     echo "Error: USERNAME and PASSWORD environment variables must be set when account database is missing." >&2
     exit 1
   fi
-  exec ./wrapper \
-    -L "${USERNAME}:${PASSWORD}" \
-    -F \
-    -H 0.0.0.0 \
-    "$@"
+  run_login "$@"
 elif { [ ! -s "$STOREFRONT_ID_PATH" ] || [ ! -s "$MUSIC_TOKEN_PATH" ]; } && \
      [ -n "${USERNAME:-}" ] && [ -n "${PASSWORD:-}" ]; then
   echo "Refreshing login: token cache is missing."
-  exec ./wrapper \
-    -L "${USERNAME}:${PASSWORD}" \
-    -F \
-    -H 0.0.0.0 \
-    "$@"
+  run_login "$@"
 else
   if [ ! -s "$STOREFRONT_ID_PATH" ] || [ ! -s "$MUSIC_TOKEN_PATH" ]; then
     echo "Warning: token cache is missing; set USERNAME and PASSWORD to refresh login if startup fails." >&2
