@@ -3,10 +3,9 @@
 `wrapper` runs the Apple Music decryption engine from the bundled Linux/Android
 runtime. An active Apple Music subscription is still required.
 
-This fork keeps the Linux/Docker workflow as the canonical runtime path and adds
-a macOS-friendly launcher as an optional convenience layer. On macOS, the native
-`wrapper` command does not run the engine natively; the real Linux engine still
-runs inside Docker.
+This fork keeps the Linux/Docker workflow as the canonical runtime and release
+path. macOS users should run the same Linux container through Docker Desktop;
+there is no native macOS launcher or native macOS engine.
 
 ## Platform Support
 
@@ -18,16 +17,13 @@ The functional engine is Linux-based.
 | Linux arm64 | Supported by the upstream project |
 | macOS Apple Silicon | Supported through Docker Desktop |
 | macOS Intel | Supported through Docker Desktop |
-| macOS launcher | Convenience wrapper around Docker |
 | Native macOS engine | Not supported |
 
 The bundled runtime in `rootfs/` contains Linux/Android ELF binaries. macOS
-cannot load those binaries directly, so macOS support depends on Docker.
+cannot load those binaries directly, so macOS support is Docker-only.
 
 ## What This Fork Adds
 
-- Optional Docker-backed macOS launcher built from `macos-native.c`.
-- CMake host detection for native macOS launcher builds.
 - Docker entrypoint support for first-login and normal service runs.
 - `scripts/doctor.sh` for runtime, Docker, port, and capability diagnostics.
 - `scripts/check.sh` for local and Docker-backed validation.
@@ -78,59 +74,12 @@ The code file is removed after the wrapper reads it. The default wait is 60
 seconds; set `WRAPPER_2FA_TIMEOUT_SECONDS` to a value from `1` to `600` to
 adjust it.
 
-## Quick Start On macOS
-
-The direct Docker workflow below is the supported path for validation and bug
-reports. The native launcher is convenient for local use, but it is still just a
-Docker runner.
-
-Install Docker Desktop first, then build the native launcher:
-
-```sh
-mkdir -p build-macos
-cmake -S . -B build-macos
-cmake --build build-macos
-```
-
-Check the setup:
-
-```sh
-./build-macos/wrapper --doctor
-```
-
-Run the wrapper:
-
-```sh
-./build-macos/wrapper
-```
-
-On first run, the launcher checks for a local Docker image named
-`wrapper-macos:local`. If it is missing, the launcher builds it from this source
-tree, mounts `rootfs/data`, publishes the configured ports, and starts the Linux
-engine inside Docker.
-
-The launcher reuses an existing local image. Rebuild it after source or
-Dockerfile changes with:
-
-```sh
-WRAPPER_DOCKER_REBUILD=1 ./build-macos/wrapper
-```
-
-Use a custom image tag:
-
-```sh
-WRAPPER_DOCKER_IMAGE=wrapper-run:local ./build-macos/wrapper
-```
-
-On macOS, `-H` controls the host address used for Docker port publishing. Inside
-the container, the Linux engine binds to `0.0.0.0` so published ports work.
-
 ## Docker Workflow
 
-The Docker workflow is the recommended way to run the Linux engine on macOS and
-is also the integration path used by the full check script. The default wrapper
-needs `--privileged` because it bind-mounts `/dev/urandom`, enters `rootfs`,
-mounts `/proc`, and starts the engine in a Linux runtime environment.
+The Docker workflow is the release path on Linux and macOS. On macOS, install
+Docker Desktop first. The default wrapper needs `--privileged` because it
+bind-mounts `/dev/urandom`, enters `rootfs`, mounts `/proc`, and starts the
+engine in a Linux runtime environment.
 
 Build a local image:
 
@@ -195,6 +144,10 @@ docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
   -p 127.0.0.1:30020:30020 \
   wrapper:local
 ```
+
+The published host ports are bound to `127.0.0.1`. Inside the container, the
+entrypoint binds the Linux service to `0.0.0.0` so Docker can forward those
+localhost-only host ports into the container.
 
 The M3U8 service uses the offline/download channel when the account reports that
 it is available. To force the streaming channel instead, add:
@@ -293,12 +246,6 @@ Run the doctor script from the source tree:
 ./scripts/doctor.sh
 ```
 
-Run the same check through the macOS launcher:
-
-```sh
-./build-macos/wrapper --doctor
-```
-
 The doctor checks:
 
 - required `rootfs` files
@@ -322,9 +269,9 @@ Run the local smoke check:
 ./scripts/check.sh
 ```
 
-This checks shell syntax, C syntax, doctor diagnostics, macOS launcher build
-behavior on macOS, and basic wrapper commands. On macOS, Docker Desktop must be
-running because doctor diagnostics check Docker availability.
+This checks shell syntax, C syntax, doctor diagnostics, and basic wrapper
+commands. On macOS, Docker Desktop must be running because doctor diagnostics
+check Docker availability.
 
 Run the full Docker-backed check before publishing Linux/Docker changes:
 

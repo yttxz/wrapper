@@ -101,7 +101,7 @@ check_cap_sys_admin() {
 }
 
 check_docker() {
-  image=${WRAPPER_DOCKER_IMAGE:-wrapper-macos:local}
+  image=${WRAPPER_DOCKER_IMAGE:-wrapper:local}
 
   if ! have_command docker; then
     if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
@@ -128,7 +128,7 @@ check_docker() {
       *) warn "Docker image $image exists, but platform could not be inspected" ;;
     esac
   else
-    warn "Docker image $image is not built yet; the macOS launcher can build it on first run"
+    warn "Docker image $image is not built yet; build it with docker buildx build --platform linux/amd64 --load --tag $image ."
   fi
 }
 
