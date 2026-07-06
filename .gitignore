@@ -1,37 +1,50 @@
 # Editor
+.DS_Store
 .vscode/
 
-# Prerequisites
-*.d
+# Build directories and toolchains
+build/
+build-*/
+android-ndk-r23b/
 
-# Object files
+# Generated wrapper binaries
+wrapper
+wrapper-rootless
+
+# Rootfs is mostly vendored/runtime data; tracked files remain tracked.
+rootfs/
+
+# Compiler and linker outputs
+*.d
 *.o
 *.ko
 *.obj
 *.elf
-
-# Linker output
 *.ilk
 *.map
 *.exp
-
-# Precompiled Headers
 *.gch
 *.pch
+*.slo
+*.lo
+*.mod
+*.smod
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
 
-# Libraries
-*.lib
+# Libraries and executables
 *.a
 *.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
+*.lai
+*.lib
 *.so
 *.so.*
 *.dylib
-
-# Executables
+*.dll
 *.exe
 *.out
 *.app
@@ -45,56 +58,6 @@
 *.idb
 *.pdb
 
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-rootfs/
-.vscode/
-wrapper
-wrapper-rootless
-rootfs/system/bin/linker64
-build/
-android-ndk-r23b/
-
-# Enviroment Variables
+# Environment variables
 .env
 !.env.example

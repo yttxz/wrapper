@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <cstdio>
 #include <exception>
 #include <functional>
@@ -9,7 +10,7 @@ extern "C" uint8_t handle_cpp(int fd) {
         handle(fd);
         return 1;
     } catch (const std::exception &e) {
-        fprintf(stderr, "[!] catched an exception: %s\n", e.what());
+        fprintf(stderr, "[!] caught an exception: %s\n", e.what());
         return 0;
     }
 }

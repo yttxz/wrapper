@@ -727,24 +727,51 @@ static inline uint8_t readfull(const int connfd, void *const buf,
     size_t red = 0;
     while (size > red) {
         const ssize_t b = read(connfd, ((uint8_t *)buf) + red, size - red);
-        if (b <= 0)
+        if (b < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             return 0;
+        }
+        if (b == 0) {
+            return 0;
+        }
         red += b;
     }
     return 1;
 }
 
-static inline void writefull(const int connfd, void *const buf,
+static inline void writefull(const int connfd, const void *const buf,
                              const size_t size) {
     size_t red = 0;
     while (size > red) {
-        const ssize_t b = write(connfd, ((uint8_t *)buf) + red, size - red);
-        if (b <= 0) {
+        const ssize_t b = write(connfd, ((const uint8_t *)buf) + red, size - red);
+        if (b < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             perror("write");
+            break;
+        }
+        if (b == 0) {
             break;
         }
         red += b;
     }
+}
+
+static void write_http_empty_response(const int connfd, const char *status,
+                                      const int close_connection) {
+    char response[160];
+    const char *connection = close_connection ? "Connection: close\r\n" : "";
+    const int len = snprintf(response, sizeof(response),
+                             "HTTP/1.1 %s\r\nContent-Type: application/json\r\nContent-Length: 0\r\n%s\r\n",
+                             status, connection);
+    if (len < 0 || (size_t)len >= sizeof(response)) {
+        fprintf(stderr, "[.] failed to format HTTP error response\n");
+        return;
+    }
+    writefull(connfd, response, (size_t)len);
 }
 
 static void *FHinstance = NULL;
@@ -871,9 +898,9 @@ void handle(const int connfd) {
 extern uint8_t handle_cpp(int);
 
 static int is_transient_accept_error(const int err) {
-    return err == ENETDOWN || err == EPROTO || err == ENOPROTOOPT ||
-           err == EHOSTDOWN || err == ENONET || err == EHOSTUNREACH ||
-           err == EOPNOTSUPP || err == ENETUNREACH;
+    return err == EINTR || err == ENETDOWN || err == EPROTO ||
+           err == ENOPROTOOPT || err == EHOSTDOWN || err == ENONET ||
+           err == EHOSTUNREACH || err == EOPNOTSUPP || err == ENETUNREACH;
 }
 
 static int open_listening_socket(const char *label, const int port) {
@@ -917,10 +944,9 @@ static int open_listening_socket(const char *label, const int port) {
 }
 
 static int accept_client(const int fd) {
-    struct sockaddr_in peer_addr;
-    socklen_t peer_addr_size = sizeof(peer_addr);
-
     while (1) {
+        struct sockaddr_in peer_addr;
+        socklen_t peer_addr_size = sizeof(peer_addr);
         const int connfd = accept4(fd, (struct sockaddr *)&peer_addr,
                                    &peer_addr_size, SOCK_CLOEXEC);
         if (connfd != -1) {
@@ -966,33 +992,78 @@ inline static int new_socket() {
 
 
 const char* get_m3u8_method_download(struct shared_ptr reqCtx, unsigned long adam) {
+    char *result = NULL;
     void *purchase_request = malloc(1024);
+    if (purchase_request == NULL) {
+        perror("malloc purchase request");
+        return NULL;
+    }
+
     _ZN17storeservicescore15PurchaseRequestC2ERKNSt6__ndk110shared_ptrINS_14RequestContextEEE(purchase_request, &reqCtx);
     _ZN17storeservicescore15PurchaseRequest23setProcessDialogActionsEb(purchase_request, 1);
     union std_string urlBagKey = new_std_string("subDownload");
     _ZN17storeservicescore15PurchaseRequest12setURLBagKeyERKNSt6__ndk112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(purchase_request, &urlBagKey);
-    char *buyParametersStr = malloc(128);
-    sprintf(buyParametersStr, "salableAdamId=%lu&price=0&pricingParameters=SUBS&productType=S", adam);
+    char buyParametersStr[128];
+    int needed = snprintf(buyParametersStr, sizeof(buyParametersStr),
+                          "salableAdamId=%lu&price=0&pricingParameters=SUBS&productType=S",
+                          adam);
+    if (needed < 0 || (size_t)needed >= sizeof(buyParametersStr)) {
+        fprintf(stderr, "[.] failed to format download buy parameters\n");
+        goto cleanup;
+    }
+
     union std_string buyParameters = new_std_string(buyParametersStr);
     _ZN17storeservicescore15PurchaseRequest16setBuyParametersERKNSt6__ndk112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(purchase_request, &buyParameters);
     _ZN17storeservicescore15PurchaseRequest3runEv(purchase_request);
     struct shared_ptr *response = _ZNK17storeservicescore15PurchaseRequest8responseEv(purchase_request);
-    struct shared_ptr *error = _ZN17storeservicescore16PurchaseResponse5errorEv(response->obj);;
-    if (error->obj == NULL) {
-        struct std_vector items = _ZNK17storeservicescore16PurchaseResponse5itemsEv(response->obj);
-        struct shared_ptr *firstItem = items.begin;
-        struct std_vector assets = _ZNK17storeservicescore12PurchaseItem6assetsEv(firstItem->obj);
-        struct shared_ptr *lastAsset = (struct shared_ptr *)assets.end - 1;
-        union std_string *url_str = malloc(sizeof(union std_string));
-        _ZNK17storeservicescore13PurchaseAsset3URLEv(url_str, lastAsset->obj);
-        const char *url = std_string_data(url_str);
-        if (url) {
-            char *result = strdup(url);  // Make a copy
-            free(url_str);
-            return result;
+    if (response == NULL || response->obj == NULL) {
+        goto cleanup;
+    }
+
+    struct shared_ptr *error = _ZN17storeservicescore16PurchaseResponse5errorEv(response->obj);
+    if (error == NULL || error->obj != NULL) {
+        goto cleanup;
+    }
+
+    struct std_vector items = _ZNK17storeservicescore16PurchaseResponse5itemsEv(response->obj);
+    struct shared_ptr *firstItem = (struct shared_ptr *)items.begin;
+    struct shared_ptr *itemsEnd = (struct shared_ptr *)items.end;
+    if (firstItem == NULL || itemsEnd == NULL || firstItem >= itemsEnd ||
+        firstItem->obj == NULL) {
+        goto cleanup;
+    }
+
+    struct std_vector assets = _ZNK17storeservicescore12PurchaseItem6assetsEv(firstItem->obj);
+    struct shared_ptr *assetBegin = (struct shared_ptr *)assets.begin;
+    struct shared_ptr *assetEnd = (struct shared_ptr *)assets.end;
+    if (assetBegin == NULL || assetEnd == NULL || assetBegin >= assetEnd) {
+        goto cleanup;
+    }
+
+    struct shared_ptr *lastAsset = assetEnd - 1;
+    if (lastAsset->obj == NULL) {
+        goto cleanup;
+    }
+
+    union std_string *url_str = malloc(sizeof(union std_string));
+    if (url_str == NULL) {
+        perror("malloc m3u8 url");
+        goto cleanup;
+    }
+
+    _ZNK17storeservicescore13PurchaseAsset3URLEv(url_str, lastAsset->obj);
+    const char *url = std_string_data(url_str);
+    if (url != NULL) {
+        result = strdup(url);
+        if (result == NULL) {
+            perror("strdup m3u8 download");
         }
-    } 
-    return NULL;
+    }
+    free(url_str);
+
+cleanup:
+    free(purchase_request);
+    return result;
 }
 
 
@@ -1076,12 +1147,12 @@ void handle_m3u8(const int connfd) {
             m3u8 = get_m3u8_method_play(leaseMgr, adamID);
         }
         if (m3u8 == NULL) {
-            fprintf(stderr, "[.] failed to get m3u8 of adamId: %ld\n", adamID);
+            fprintf(stderr, "[.] failed to get m3u8 of adamId: %lu\n", adamID);
             writefull(connfd, "\n", 1);
         } else {
-            fprintf(stderr, "[.] m3u8 adamId: %ld, url bytes: %zu\n",
+            fprintf(stderr, "[.] m3u8 adamId: %lu, url bytes: %zu\n",
                     adamID, strlen(m3u8));
-            writefull(connfd, (void *)m3u8, strlen(m3u8));
+            writefull(connfd, m3u8, strlen(m3u8));
             writefull(connfd, "\n", 1);
             free((void *)m3u8);
         }
@@ -1118,24 +1189,20 @@ void handle_account(const int connfd)
         return;
     }
     if ((size_t)n > MAX_ACCOUNT_REQUEST_BYTES) {
-        const char *error_response = "HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        writefull(connfd, (void *)error_response, strlen(error_response));
+        write_http_empty_response(connfd, "413 Payload Too Large", 1);
         return;
     }
     buffer[n] = '\0';
 
-    // Parse HTTP request (simple check for GET)
     if (strncmp(buffer, "GET", 3) != 0 && strncmp(buffer, "POST", 4) != 0) {
-        const char *error_response = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
-        writefull(connfd, (void *)error_response, strlen(error_response));
+        write_http_empty_response(connfd, "400 Bad Request", 0);
         return;
     }
 
     cJSON *json = cJSON_CreateObject();
     if (json == NULL) {
         fprintf(stderr, "[.] failed to allocate account response JSON\n");
-        const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
-        writefull(connfd, (void *)error_response, strlen(error_response));
+        write_http_empty_response(connfd, "500 Internal Server Error", 0);
         return;
     }
 
@@ -1144,8 +1211,7 @@ void handle_account(const int connfd)
         cJSON_AddStringToObject(json, "music_token", g_music_token ? g_music_token : "") == NULL) {
         fprintf(stderr, "[.] failed to populate account response JSON\n");
         cJSON_Delete(json);
-        const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
-        writefull(connfd, (void *)error_response, strlen(error_response));
+        write_http_empty_response(connfd, "500 Internal Server Error", 0);
         return;
     }
 
@@ -1153,8 +1219,7 @@ void handle_account(const int connfd)
     cJSON_Delete(json);
     if (json_body == NULL) {
         fprintf(stderr, "[.] failed to format account response JSON\n");
-        const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
-        writefull(connfd, (void *)error_response, strlen(error_response));
+        write_http_empty_response(connfd, "500 Internal Server Error", 0);
         return;
     }
 
@@ -1166,12 +1231,12 @@ void handle_account(const int connfd)
     if (header_len < 0 || (size_t)header_len >= sizeof(http_response)) {
         fprintf(stderr, "[.] failed to format account response headers\n");
         cJSON_free(json_body);
-        const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
-        writefull(connfd, (void *)error_response, strlen(error_response));
+        write_http_empty_response(connfd, "500 Internal Server Error", 0);
         return;
     }
 
-    fprintf(stderr, "[.] returning account info, storefront: %s\n", g_storefront_id);
+    fprintf(stderr, "[.] returning account info, storefront: %s\n",
+            g_storefront_id ? g_storefront_id : "");
     writefull(connfd, http_response, (size_t)header_len);
     writefull(connfd, json_body, json_len);
 
@@ -1213,16 +1278,15 @@ char* get_account_storefront_id(struct shared_ptr reqCtx) {
     struct shared_ptr urlbag = {.obj = 0x0, .ctrl_blk = 0x0};
     _ZNK17storeservicescore14RequestContext20storeFrontIdentifierERKNSt6__ndk110shared_ptrINS_6URLBagEEE(region, reqCtx.obj, &urlbag);
     const char *region_str = std_string_data(region);
+    char *result = NULL;
     if (region_str) {
-        char *result = strdup(region_str); 
+        result = strdup(region_str);
         if (result == NULL) {
             perror("strdup storefront");
         }
-        free(region);
-        return result;
-    } 
+    }
     free(region);
-    return NULL;
+    return result;
 }
 
 void write_storefront_id(void) {
@@ -1401,32 +1465,8 @@ void write_music_token(void) {
         return;
     }
 
-    int token_file_available = 0;
-    if (file_exists(path)) {
-        FILE *fp = fopen(path, "r");
-        if (NULL != fp) {
-            fseek (fp, 0, SEEK_END);
-            long size = ftell(fp);
-
-            if (0 != size) {
-                token_file_available = 1;
-            }
-            fclose(fp);
-        }
-    }
-    if (token_file_available) {
-        char token[256];
-        FILE *fp = fopen(path, "r");
-        if (fp == NULL) {
-            perror("fopen MUSIC_TOKEN");
-            return;
-        }
-        if (fgets(token, sizeof(token), fp) == NULL) {
-            fclose(fp);
-            fprintf(stderr, "[!] failed to read MUSIC_TOKEN\n");
-            return;
-        }
-        fclose(fp);
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
         fprintf(stderr, "[+] Music token cache exists\n");
         return;
     }
