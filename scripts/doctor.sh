@@ -133,7 +133,7 @@ check_docker() {
 }
 
 root=$(resolve_root)
-data_dir="$root/rootfs/data"
+data_dir=${WRAPPER_DATA_DIR:-$root/rootfs/data}
 music_files="$data_dir/data/com.apple.android.music/files"
 token_db="$music_files/mpl_db/kvs.sqlitedb"
 storefront_id="$music_files/STOREFRONT_ID"

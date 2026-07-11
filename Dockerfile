@@ -12,35 +12,58 @@ SHELL ["/bin/bash", "-c"]
 
 WORKDIR /app
 
+COPY ./ ./
+
+RUN if [[ -x /app/wrapper && ! -f /app/CMakeLists.txt ]]; then \
+        touch /use_prebuilt; \
+    elif [[ ! -f /app/CMakeLists.txt ]]; then \
+        echo "ERROR: build context contains neither CMakeLists.txt nor a prebuilt /app/wrapper." >&2; \
+        exit 1; \
+    fi
+
 RUN --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    apt-get update; \
-    apt-get install -y \
-        ca-certificates \
-        aria2 \
-        build-essential \
-        cmake \
-        unzip \
-        git \
-        lsb-release \
-        gnupg
+    if [[ ! -f /use_prebuilt ]]; then \
+        apt-get update; \
+        apt-get install -y \
+            ca-certificates \
+            aria2 \
+            build-essential \
+            cmake \
+            unzip \
+            git \
+            lsb-release \
+            gnupg; \
+    fi
 
-RUN aria2c -o android-ndk-r${NDK_VERSION}b-linux.zip https://dl.google.com/android/repository/android-ndk-r${NDK_VERSION}b-linux.zip && \
-    echo "${ANDROID_NDK_SHA256}  android-ndk-r${NDK_VERSION}b-linux.zip" | sha256sum -c - && \
-    unzip -q -d /app android-ndk-r${NDK_VERSION}b-linux.zip && \
-    rm android-ndk-r${NDK_VERSION}b-linux.zip
+RUN if [[ ! -f /use_prebuilt ]]; then \
+        aria2c -o android-ndk-r${NDK_VERSION}b-linux.zip https://dl.google.com/android/repository/android-ndk-r${NDK_VERSION}b-linux.zip; \
+        echo "${ANDROID_NDK_SHA256}  android-ndk-r${NDK_VERSION}b-linux.zip" | sha256sum -c -; \
+        unzip -q -d /app android-ndk-r${NDK_VERSION}b-linux.zip; \
+        rm android-ndk-r${NDK_VERSION}b-linux.zip; \
+    fi
 
-COPY ./ ./
-RUN mkdir -p build && \
-    cmake -S /app -B /app/build -DTARGET_ARCH=${TARGET_ARCH} && \
-    cmake --build /app/build -j$(nproc)
+RUN if [[ ! -f /use_prebuilt ]]; then \
+        test -f /app/CMakeLists.txt || { echo "ERROR: source build context is missing CMakeLists.txt." >&2; exit 1; }; \
+        mkdir -p build; \
+        cmake -S /app -B /app/build -DTARGET_ARCH=${TARGET_ARCH}; \
+        cmake --build /app/build -j$(nproc); \
+    else \
+        test -x /app/wrapper || { echo "ERROR: prebuilt context is missing executable /app/wrapper." >&2; exit 1; }; \
+        chmod +x /app/wrapper; \
+    fi
 
-RUN mkdir -p /app/rootfs/system/usr/share/zoneinfo && \
-    aria2c -q -d /tmp -o android-tzdata.b64 "https://android.googlesource.com/platform/system/timezone/+/${ANDROID_TZDATA_COMMIT}/output_data/iana/tzdata?format=TEXT" && \
-    base64 --decode /tmp/android-tzdata.b64 > /tmp/android-tzdata && \
-    echo "${ANDROID_TZDATA_SHA256}  /tmp/android-tzdata" | sha256sum -c - && \
-    mv /tmp/android-tzdata /app/rootfs/system/usr/share/zoneinfo/tzdata && \
-    rm /tmp/android-tzdata.b64
+RUN if [[ ! -f /use_prebuilt ]]; then \
+        mkdir -p /app/rootfs/system/usr/share/zoneinfo; \
+        aria2c -q -d /tmp -o android-tzdata.b64 "https://android.googlesource.com/platform/system/timezone/+/${ANDROID_TZDATA_COMMIT}/output_data/iana/tzdata?format=TEXT"; \
+        base64 --decode /tmp/android-tzdata.b64 > /app/rootfs/system/usr/share/zoneinfo/tzdata; \
+        rm /tmp/android-tzdata.b64; \
+    fi; \
+    test -x /app/wrapper; \
+    test -f /app/rootfs/system/bin/main; \
+    test -f /app/rootfs/system/bin/linker64; \
+    test -f /app/rootfs/system/usr/share/zoneinfo/tzdata; \
+    echo "${ANDROID_TZDATA_SHA256}  /app/rootfs/system/usr/share/zoneinfo/tzdata" | sha256sum -c -
 
 FROM --platform=${RUNTIME_PLATFORM} debian:13.2
 

@@ -7,10 +7,10 @@ on:
     branches: [ "main" ]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  build-test:
     runs-on: ubuntu-22.04
 
     steps:
@@ -18,40 +18,92 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Install LLVM
-      run: sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
+    - name: Install build dependencies
+      run: sudo apt-get update && sudo apt-get install -y aria2 zip
 
     - name: Set up Android NDK r23b
       run: |
-        curl -fLO https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
+        aria2c -o android-ndk-r23b-linux.zip https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
         echo "c6e97f9c8cfe5b7be0a9e6c15af8e7a179475b7ded23e2d1c1fa0945d6fb4382  android-ndk-r23b-linux.zip" | sha256sum -c -
         unzip -qd . android-ndk-r23b-linux.zip
+        rm android-ndk-r23b-linux.zip
 
-    - name: Build
+    - name: Build native x86_64 artifacts
       run: |
-        mkdir build
-        cd build
-        cmake ..
-        make
+        cmake -S . -B build
+        cmake --build build -j"$(nproc)"
 
-    - name: Set outputs
-      id: vars
-      run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+    - name: Add pinned Android timezone data
+      run: |
+        mkdir -p rootfs/system/usr/share/zoneinfo
+        aria2c -q -o android-tzdata.b64 "https://android.googlesource.com/platform/system/timezone/+/0470df3d38d8e08932ebbe08b3d8ec9bbdcd403f/output_data/iana/tzdata?format=TEXT"
+        base64 --decode android-tzdata.b64 > rootfs/system/usr/share/zoneinfo/tzdata
+        echo "479e83ca4d289b2ae3d08eb222a5167a3c8bff185f2ccac932458e96bd6489ee  rootfs/system/usr/share/zoneinfo/tzdata" | sha256sum -c -
+        rm android-tzdata.b64
 
-    - name: Create Release Zip File
-      run: zip -r Wrapper.x86_64.latest.zip rootfs/ wrapper wrapper-rootless Dockerfile compose.yaml entrypoint.sh
+    - name: Run source and Docker checks
+      run: |
+        mkdir -p rootfs/data/data/com.apple.android.music/files
+        RUN_DOCKER_CHECKS=1 ./scripts/check.sh
 
-    - name: Update Tag
+    - name: Create release ZIP
+      run: ./scripts/package-release.sh Wrapper.x86_64.latest.zip
+
+    - name: Validate release ZIP contents
+      run: |
+        mkdir release-context
+        unzip -q Wrapper.x86_64.latest.zip -d release-context
+        test ! -e release-context/CMakeLists.txt
+        test ! -e release-context/rootfs/data
+        test -x release-context/wrapper
+        test -x release-context/wrapper-rootless
+        test -x release-context/rootfs/system/bin/main
+        test -f release-context/rootfs/system/usr/share/zoneinfo/tzdata
+
+    - name: Build and inspect release Docker image
+      run: |
+        docker buildx build --platform linux/amd64 --load --tag wrapper-release-check:local release-context
+        docker run --platform linux/amd64 --rm --entrypoint /bin/sh wrapper-release-check:local -c \
+          'test -d /app/rootfs/data/data/com.apple.android.music/files && ! find /app/rootfs/data -type f | grep -q .'
+        docker run --platform linux/amd64 --privileged --rm wrapper-release-check:local --doctor
+        docker run --platform linux/amd64 --rm --entrypoint /app/wrapper wrapper-release-check:local --version
+        docker run --platform linux/amd64 --rm --entrypoint /app/wrapper wrapper-release-check:local --help
+
+    - name: Upload tested release artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Wrapper.x86_64.latest
+        path: Wrapper.x86_64.latest.zip
+        if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-test
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Download tested release artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: Wrapper.x86_64.latest
+
+    - name: Update release tag
       run: |
         git tag -f wrapper.x86_64.latest
         git push origin wrapper.x86_64.latest --force
 
-    - name: Create or Update Release
+    - name: Create or update release
       uses: softprops/action-gh-release@v2
       with:
         files: Wrapper.x86_64.latest.zip
         body: |
-          Latest build for x86_64.
+          Latest tested build for x86_64.
           Commit: ${{ github.sha }}
           Message: ${{ github.event.head_commit.message }}
         name: Wrapper.x86_64.latest

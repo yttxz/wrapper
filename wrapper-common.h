@@ -82,9 +82,70 @@ static inline void wrapper_chmod_runtime_binaries(void) {
     chmod("/system/bin/main", 0755);
 }
 
+static inline int wrapper_ensure_directory(const char *path, mode_t mode) {
+    struct stat path_stat;
+
+    if (mkdir(path, mode) == 0) {
+        return 0;
+    }
+    if (errno != EEXIST) {
+        return -1;
+    }
+    if (stat(path, &path_stat) != 0) {
+        return -1;
+    }
+    if (!S_ISDIR(path_stat.st_mode)) {
+        errno = ENOTDIR;
+        return -1;
+    }
+
+    return 0;
+}
+
+static inline int wrapper_mkdir_p(const char *path, mode_t mode) {
+    char path_copy[1024];
+    size_t path_len;
+
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    path_len = strlen(path);
+    if (path_len >= sizeof(path_copy)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    memcpy(path_copy, path, path_len + 1);
+    while (path_len > 1 && path_copy[path_len - 1] == '/') {
+        path_copy[--path_len] = '\0';
+    }
+
+    char *cursor = path_copy;
+    if (cursor[0] == '/') {
+        cursor++;
+    }
+
+    for (; cursor[0] != '\0'; cursor++) {
+        if (cursor[0] != '/' || cursor[-1] == '/') {
+            continue;
+        }
+
+        cursor[0] = '\0';
+        if (wrapper_ensure_directory(path_copy, mode) != 0) {
+            cursor[0] = '/';
+            return -1;
+        }
+        cursor[0] = '/';
+    }
+
+    return wrapper_ensure_directory(path_copy, mode);
+}
+
 static inline int wrapper_create_runtime_dirs(const char *base_dir) {
-    if (mkdir(base_dir, 0777) != 0 && errno != EEXIST) {
-        perror("mkdir base_dir_arg failed");
+    if (wrapper_mkdir_p(base_dir, 0777) != 0) {
+        perror("create base directory failed");
         return -1;
     }
 
@@ -94,8 +155,8 @@ static inline int wrapper_create_runtime_dirs(const char *base_dir) {
         fprintf(stderr, "mpl_db path is too long\n");
         return -1;
     }
-    if (mkdir(db_path, 0777) != 0 && errno != EEXIST) {
-        perror("mkdir mpl_db failed");
+    if (wrapper_mkdir_p(db_path, 0777) != 0) {
+        perror("create mpl_db directory failed");
         return -1;
     }
 
