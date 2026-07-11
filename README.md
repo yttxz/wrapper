@@ -16,6 +16,9 @@ through Docker Desktop; this project does not ship a macOS-native executable.
 | Native macOS | Not supported |
 
 `rootfs/` contains Linux/Android ELF binaries, so macOS support is Docker-only.
+This fork and its release workflow remain x86_64-focused. The upstream reference
+tree with `wrapper-android`, proot, and `aarch64` compiler settings is the arm64
+variant and is not part of this parity pass.
 
 ## What This Fork Adds
 
@@ -27,6 +30,10 @@ through Docker Desktop; this project does not ship a macOS-native executable.
 - Shared common setup code for the privileged Linux wrapper and rootless wrapper.
 - Safer C paths around input parsing, path formatting, token/cache handling,
   account JSON formatting, sockets, offline channel probing, and cleanup.
+
+Upstream-compatible ownership repair, environment-password login, file-based
+2FA, and verbose protocol logging remain available through explicit environment
+flags. Their safer defaults are unchanged in this fork.
 
 ## Data And Login
 
@@ -66,6 +73,20 @@ Build a local image:
 cd path/to/wrapper
 docker buildx build --platform linux/amd64 --load --tag wrapper:local .
 ```
+
+The published `Wrapper.x86_64.latest.zip` is also a complete Docker build
+context. It contains tested prebuilt binaries and pinned Android timezone data,
+so building it skips the compiler, CMake, and Android NDK download:
+
+```sh
+unzip Wrapper.x86_64.latest.zip -d wrapper-release
+cd wrapper-release
+docker buildx build --platform linux/amd64 --load --tag wrapper:local .
+```
+
+Release archives intentionally contain an empty runtime data area in the image.
+Continue to mount `rootfs/data` from the host when logging in or running the
+service.
 
 Docker builds verify downloaded build inputs before unpacking or installing
 them. The pinned inputs are:
@@ -270,6 +291,22 @@ RUN_DOCKER_CHECKS=1 ./scripts/check.sh
 The extended check builds a `linux/amd64` image, verifies account state from
 `rootfs/data` is not baked into the image, runs doctor diagnostics inside a
 privileged container, and runs the smoke test below.
+Set `WRAPPER_CHECK_DATA_DIR` to an empty temporary directory to run all checks
+without reading or mounting the normal account-state directory.
+
+Maintainers create the release artifact only after the native binaries, engine,
+and pinned timezone database have been generated:
+
+```sh
+cd path/to/wrapper
+./scripts/package-release.sh Wrapper.x86_64.latest.zip
+```
+
+The packager fails when required runtime files are missing or have the wrong
+timezone checksum. It stages an explicit file manifest and never copies
+`rootfs/data`, local credentials, source files, or build directories. CI then
+builds Docker images from both the source checkout and the extracted archive;
+the release tag is updated only after both paths pass.
 
 Run the Docker smoke test directly:
 
