@@ -211,6 +211,7 @@ else
   check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_DECRYPT_PORT:-10020}"
   check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_M3U8_PORT:-20020}"
   check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_ACCOUNT_PORT:-30020}"
+  check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_KEY_PORT:-40020}"
 fi
 
 printf '\nsummary: %d failure(s), %d warning(s)\n' "$failures" "$warnings"

@@ -13,6 +13,7 @@ data_dir=${WRAPPER_SMOKE_DATA_DIR:-$root/rootfs/data}
 decrypt_port=${WRAPPER_SMOKE_DECRYPT_PORT:-11020}
 m3u8_port=${WRAPPER_SMOKE_M3U8_PORT:-12020}
 account_port=${WRAPPER_SMOKE_ACCOUNT_PORT:-13020}
+key_port=${WRAPPER_SMOKE_KEY_PORT:-14020}
 start_timeout=${WRAPPER_SMOKE_START_TIMEOUT:-60}
 poll_seconds=2
 container_started=0
@@ -109,6 +110,28 @@ print("[smoke] account endpoint returned expected JSON fields")
 PY
 }
 
+validate_key_endpoint() {
+  python3 - "$key_port" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+url = "http://127.0.0.1:" + sys.argv[1] + "/key"
+try:
+    urllib.request.urlopen(url, timeout=5)
+except urllib.error.HTTPError as response:
+    body = response.read()
+    if response.code != 400 or response.headers.get("Content-Length") != str(len(body)):
+        sys.exit("[smoke] fail: key endpoint returned an unexpected HTTP error")
+    if json.loads(body).get("code") != "400":
+        sys.exit("[smoke] fail: key endpoint error JSON is invalid")
+else:
+    sys.exit("[smoke] fail: key endpoint accepted missing parameters")
+print("[smoke] key endpoint rejected missing parameters with framed JSON")
+PY
+}
+
 if ! have_command docker; then
   fail "Docker CLI is not available"
 fi
@@ -154,6 +177,7 @@ docker run --platform "$platform" --privileged -d \
   -p "127.0.0.1:$decrypt_port:10020" \
   -p "127.0.0.1:$m3u8_port:20020" \
   -p "127.0.0.1:$account_port:30020" \
+  -p "127.0.0.1:$key_port:40020" \
   "$image" >/dev/null
 container_started=1
 
@@ -161,6 +185,7 @@ elapsed=0
 while [ "$elapsed" -lt "$start_timeout" ]; do
   if fetch_account_response; then
     validate_account_response
+    validate_key_endpoint
     log "service smoke passed"
     exit 0
   fi
