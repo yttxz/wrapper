@@ -15,3 +15,8 @@ build-*
 android-ndk-r23b
 release-context
 Wrapper.*.zip
+
+qemu
+wrapper-lite-qemu*
+
+rootfs/system/bin/main

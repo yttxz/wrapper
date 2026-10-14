@@ -1,11 +1,3 @@
-/*
- * wrapper.c — Apple Music 解密 wrapper 的宿主层 (root 特权版)
- * 流程: 解析命令行 → bind-mount rootfs/dev/urandom → chdir+chroot ./rootfs
- *   → 若有 CAP_SYS_ADMIN 则 unshare(CLONE_NEWPID) → fork 子进程
- *   → mount proc, 建 base_dir/mpl_db → execve("/system/bin/main")。
- * main 在 chroot 内以 Android 环境运行, 提供 10020/20020/30020/40020 四个服务。
- * 免 root 版见 wrapper-rootless.c。
- */
 #define _GNU_SOURCE
 
 #include <errno.h>
@@ -21,11 +13,9 @@
 #include <string.h>
 #include <sys/mount.h>
 
-#include "cmdline.h"
 #include "wrapper-common.h"
 
 pid_t child_proc = -1;
-struct gengetopt_args_info args_info;
 #define CAP_SYS_ADMIN_IDX 21
 #define CAP_SYS_ADMIN_BIT (1ULL << CAP_SYS_ADMIN_IDX)
 
@@ -66,7 +56,8 @@ int has_cap_sys_admin() {
 }
 
 int main(int argc, char *argv[], char *envp[]) {
-    cmdline_parser(argc, argv, &args_info);
+    if (wrapper_handle_info(argc, argv)) return 0;
+    const char *base_dir = wrapper_base_dir(argc, argv);
     if (wrapper_install_signal_handler() != 0) {
         return 1;
     }
@@ -121,7 +112,7 @@ int main(int argc, char *argv[], char *envp[]) {
         return 1;
     }
 
-    if (wrapper_create_runtime_dirs(args_info.base_dir_arg) != 0) {
+    if (wrapper_create_runtime_dirs(base_dir) != 0) {
         return 1;
     }
 
@@ -129,7 +120,7 @@ int main(int argc, char *argv[], char *envp[]) {
         return 1;
     }
 
-    execve("/system/bin/main", argv, environ);
+    execve("/system/bin/lite", argv, environ);
     
     perror("execve");
     return 1;

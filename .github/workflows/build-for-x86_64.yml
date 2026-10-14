@@ -1,4 +1,4 @@
-name: Build for x86_64
+name: Build Lite for x86_64
 
 on:
   push:
@@ -30,16 +30,16 @@ jobs:
 
     - name: Build native x86_64 artifacts
       run: |
-        cmake -S . -B build
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
         cmake --build build -j"$(nproc)"
 
-    - name: Add pinned Android timezone data
+    - name: Verify pinned runtime inputs
       run: |
-        mkdir -p rootfs/system/usr/share/zoneinfo
-        aria2c -q -o android-tzdata.b64 "https://android.googlesource.com/platform/system/timezone/+/0470df3d38d8e08932ebbe08b3d8ec9bbdcd403f/output_data/iana/tzdata?format=TEXT"
-        base64 --decode android-tzdata.b64 > rootfs/system/usr/share/zoneinfo/tzdata
         echo "479e83ca4d289b2ae3d08eb222a5167a3c8bff185f2ccac932458e96bd6489ee  rootfs/system/usr/share/zoneinfo/tzdata" | sha256sum -c -
-        rm android-tzdata.b64
+        echo "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505  rootfs/system/etc/security/cacert.pem" | sha256sum -c -
+
+    - name: Test production HTTP handlers with fixture backend
+      run: ./scripts/http-contract-check.sh build/_deps/cjson-src
 
     - name: Run source and Docker checks
       run: |
@@ -47,33 +47,38 @@ jobs:
         RUN_DOCKER_CHECKS=1 ./scripts/check.sh
 
     - name: Create release ZIP
-      run: ./scripts/package-release.sh Wrapper.x86_64.latest.zip
+      run: ./scripts/package-release.sh Wrapper.Lite.x86_64.latest.zip
 
     - name: Validate release ZIP contents
       run: |
         mkdir release-context
-        unzip -q Wrapper.x86_64.latest.zip -d release-context
+        unzip -q Wrapper.Lite.x86_64.latest.zip -d release-context
         test ! -e release-context/CMakeLists.txt
         test ! -e release-context/rootfs/data
-        test -x release-context/wrapper
-        test -x release-context/wrapper-rootless
-        test -x release-context/rootfs/system/bin/main
+        test -x release-context/wrapper-lite
+        test -x release-context/wrapper-lite-rootless
+        test -x release-context/rootfs/system/bin/lite
         test -f release-context/rootfs/system/usr/share/zoneinfo/tzdata
 
     - name: Build and inspect release Docker image
       run: |
-        docker buildx build --platform linux/amd64 --load --tag wrapper-release-check:local release-context
-        docker run --platform linux/amd64 --rm --entrypoint /bin/sh wrapper-release-check:local -c \
+        docker buildx build --platform linux/amd64 --load --tag wrapper-lite-release-check:local release-context
+        docker run --platform linux/amd64 --rm --entrypoint /bin/sh wrapper-lite-release-check:local -c \
           'test -d /app/rootfs/data/data/com.apple.android.music/files && ! find /app/rootfs/data -type f | grep -q .'
-        docker run --platform linux/amd64 --privileged --rm wrapper-release-check:local --doctor
-        docker run --platform linux/amd64 --rm --entrypoint /app/wrapper wrapper-release-check:local --version
-        docker run --platform linux/amd64 --rm --entrypoint /app/wrapper wrapper-release-check:local --help
+        docker run --platform linux/amd64 --privileged --rm wrapper-lite-release-check:local --doctor
+        docker run --platform linux/amd64 --rm --entrypoint /app/wrapper-lite wrapper-lite-release-check:local --version
+        docker run --platform linux/amd64 --rm --entrypoint /app/wrapper-lite wrapper-lite-release-check:local --help
+
+    - name: Verify Android TLS certificate handling
+      run: |
+        cmake --build build --target tls_probe -j"$(nproc)"
+        python3 tests/tls_runtime_test.py wrapper-lite-release-check:local build/tls_probe
 
     - name: Upload tested release artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Wrapper.x86_64.latest
-        path: Wrapper.x86_64.latest.zip
+        name: Wrapper.Lite.x86_64.latest
+        path: Wrapper.Lite.x86_64.latest.zip
         if-no-files-found: error
 
   release:
@@ -91,22 +96,22 @@ jobs:
     - name: Download tested release artifact
       uses: actions/download-artifact@v4
       with:
-        name: Wrapper.x86_64.latest
+        name: Wrapper.Lite.x86_64.latest
 
     - name: Update release tag
       run: |
-        git tag -f wrapper.x86_64.latest
-        git push origin wrapper.x86_64.latest --force
+        git tag -f wrapper.lite.x86_64.latest
+        git push origin wrapper.lite.x86_64.latest --force
 
     - name: Create or update release
       uses: softprops/action-gh-release@v2
       with:
-        files: Wrapper.x86_64.latest.zip
+        files: Wrapper.Lite.x86_64.latest.zip
         body: |
-          Latest tested build for x86_64.
+          Latest tested Lite build for x86_64.
           Commit: ${{ github.sha }}
           Message: ${{ github.event.head_commit.message }}
-        name: Wrapper.x86_64.latest
-        tag_name: wrapper.x86_64.latest
+        name: Wrapper.Lite.x86_64.latest
+        tag_name: wrapper.lite.x86_64.latest
         make_latest: true
         overwrite: true

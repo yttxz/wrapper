@@ -12,6 +12,9 @@ Wrapper.*.zip
 # Generated wrapper binaries
 wrapper
 wrapper-rootless
+wrapper-lite
+wrapper-lite-rootless
+wrapper-lite-qemu
 
 # Rootfs is mostly vendored/runtime data; tracked files remain tracked.
 rootfs/
@@ -63,3 +66,22 @@ dkms.conf
 # Environment variables
 .env
 !.env.example
+# wrapper-lite generated binaries
+wrapper-lite
+wrapper-lite-rootless
+wrapper-lite-qemu
+wrapper-lite-qemu.exe
+
+# QEMU generated assets
+qemu/data.img
+qemu/lite-initramfs.cpio.gz
+qemu/vmlinuz-lite-qemu
+qemu/bin/
+
+# Local account / generated host files
+account.txt
+busybox-static_*_amd64.deb
+run
+run.cpp
+build-run.sh
+build-run/

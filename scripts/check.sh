@@ -1,70 +1,27 @@
 #!/bin/sh
-
 set -eu
-
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 data_dir=${WRAPPER_CHECK_DATA_DIR:-$root/rootfs/data}
-
-if [ -n "${WRAPPER_CHECK_DATA_DIR:-}" ]; then
-  mkdir -p "$data_dir/data/com.apple.android.music/files"
-fi
-
-run() {
-  printf '\n[check] %s\n' "$*"
-  "$@"
-}
-
-if command -v sh >/dev/null 2>&1; then
-  run sh -n entrypoint.sh
-  run sh -n scripts/doctor.sh
-  run sh -n scripts/check.sh
-  run sh -n scripts/package-release.sh
-  run sh -n scripts/smoke.sh
-fi
-
-run env WRAPPER_DATA_DIR="$data_dir" scripts/doctor.sh
-
-if command -v clang >/dev/null 2>&1; then
-  run clang -fsyntax-only -Wall -Wextra -Werror cmdline.c
-
-  run clang -DMyRelease -fsyntax-only -Wall -Wextra -Werror \
-    -Itests/stubs -include tests/stubs/linux_compat.h main.c
-else
-  printf '[warn] clang not found; skipping syntax-only C checks\n'
-fi
-
-if command -v cc >/dev/null 2>&1; then
-  runtime_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/wrapper-runtime-test.XXXXXX")
-  trap 'rm -rf "$runtime_test_dir"' EXIT HUP INT TERM
-  run cc -std=c99 -Wall -Wextra -Werror -I. \
-    tests/runtime_dirs_test.c -o "$runtime_test_dir/runtime-dirs-test"
-  run "$runtime_test_dir/runtime-dirs-test" "$runtime_test_dir/root"
-  run cc -std=c99 -Wall -Wextra -Werror -pthread -I. \
-    tests/key_request_test.c -o "$runtime_test_dir/key-request-test"
-  run "$runtime_test_dir/key-request-test"
-  if command -v c++ >/dev/null 2>&1; then
-    run c++ -std=c++11 -Wall -Wextra -Werror -pthread \
-      tests/key_exception_test.cpp main.cpp -o "$runtime_test_dir/key-exception-test"
-    run "$runtime_test_dir/key-exception-test"
-  fi
-else
-  printf '[warn] host C compiler not available; skipping runtime directory test\n'
-fi
-
-if [ "${RUN_DOCKER_CHECKS:-0}" = "1" ]; then
-  run docker buildx build --platform linux/amd64 --load --tag wrapper-check:local .
-  run docker run --platform linux/amd64 --rm --entrypoint /bin/sh \
-    wrapper-check:local -c \
+mkdir -p "$data_dir/data/com.apple.android.music/files"
+for script in entrypoint.sh scripts/*.sh; do sh -n "$script"; done
+env WRAPPER_DATA_DIR="$data_dir" ./scripts/doctor.sh
+test_dir=$(mktemp -d "${TMPDIR:-/tmp}/wrapper-lite-tests.XXXXXX")
+trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
+cc -std=c99 -Wall -Wextra -Werror -I. tests/runtime_dirs_test.c -o "$test_dir/runtime-dirs"
+"$test_dir/runtime-dirs" "$test_dir/root"
+c++ -std=c++11 -Wall -Wextra -Werror -fsanitize=address,undefined -I. \
+  tests/login_input_test.cpp -o "$test_dir/login-input"
+"$test_dir/login-input" "$test_dir/auth"
+c++ -std=c++11 -Wall -Wextra -Werror -I. tests/terminal_probe.cpp -o "$test_dir/terminal-probe"
+python3 tests/terminal_input_test.py "$test_dir/terminal-probe"
+if [ "${RUN_DOCKER_CHECKS:-0}" = 1 ]; then
+  image=${WRAPPER_CHECK_IMAGE:-wrapper-lite-check:local}
+  docker buildx build --platform linux/amd64 --load --tag "$image" .
+  docker run --platform linux/amd64 --rm --entrypoint /bin/sh "$image" -c \
     'test -d /app/rootfs/data/data/com.apple.android.music/files && ! find /app/rootfs/data -type f | grep -q .'
-  run docker run --platform linux/amd64 --privileged --rm \
-    -v "$data_dir:/app/rootfs/data" \
-    wrapper-check:local --doctor
-  run env WRAPPER_SMOKE_BUILD=0 WRAPPER_SMOKE_IMAGE=wrapper-check:local \
-    WRAPPER_SMOKE_DATA_DIR="$data_dir" \
-    scripts/smoke.sh
+  env WRAPPER_SMOKE_BUILD=0 WRAPPER_SMOKE_IMAGE="$image" WRAPPER_SMOKE_DATA_DIR="$data_dir" ./scripts/smoke.sh
 else
-  printf '[warn] RUN_DOCKER_CHECKS=1 not set; skipping Docker build/container checks\n'
+  echo '[check] Docker checks require RUN_DOCKER_CHECKS=1'
 fi
-
-printf '\n[check] done\n'
+echo '[check] passed'

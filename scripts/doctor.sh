@@ -101,7 +101,7 @@ check_cap_sys_admin() {
 }
 
 check_docker() {
-  image=${WRAPPER_DOCKER_IMAGE:-wrapper:local}
+  image=${WRAPPER_DOCKER_IMAGE:-wrapper-lite:local}
 
   if ! have_command docker; then
     if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
@@ -138,10 +138,10 @@ music_files="$data_dir/data/com.apple.android.music/files"
 token_db="$music_files/mpl_db/kvs.sqlitedb"
 storefront_id="$music_files/STOREFRONT_ID"
 music_token="$music_files/MUSIC_TOKEN"
-engine="$root/rootfs/system/bin/main"
+engine="$root/rootfs/system/bin/lite"
 tzdata="$root/rootfs/system/usr/share/zoneinfo/tzdata"
 
-printf 'wrapper doctor\n'
+printf 'wrapper-lite doctor\n'
 printf 'project root: %s\n\n' "$root"
 
 check_path "$root/rootfs" "rootfs"
@@ -180,6 +180,13 @@ else
   fi
 fi
 
+ca_bundle="$root/rootfs/system/etc/security/cacert.pem"
+if [ -s "$ca_bundle" ]; then
+  ok "HTTPS CA bundle exists"
+else
+  fail "HTTPS CA bundle is missing: $ca_bundle"
+fi
+
 if [ -e "$engine" ]; then
   if [ -x "$engine" ]; then
     ok "engine binary is executable"
@@ -208,10 +215,7 @@ if is_docker_container; then
   check_cap_sys_admin
 else
   check_docker
-  check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_DECRYPT_PORT:-10020}"
-  check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_M3U8_PORT:-20020}"
-  check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_ACCOUNT_PORT:-30020}"
-  check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_KEY_PORT:-40020}"
+  check_port "${WRAPPER_HOST:-127.0.0.1}" "${WRAPPER_PORT:-12340}"
 fi
 
 printf '\nsummary: %d failure(s), %d warning(s)\n' "$failures" "$warnings"
