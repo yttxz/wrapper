@@ -1,399 +1,194 @@
-# wrapper
+# wrapper-lite
 
-`wrapper` runs the Apple Music decryption engine from the bundled Linux/Android
-runtime. An active Apple Music subscription is required.
+This fork runs WorldObservationLog's Lite HTTP API for the current
+`apple-music-downloader`. An active Apple Music subscription is required.
 
-The supported release path is Docker. macOS users should run the Linux container
-through Docker Desktop; this project does not ship a macOS-native executable.
+Docker on `linux/amd64` is the supported release path, including on macOS through
+Docker Desktop. The engine still uses the bundled Linux/Android runtime.
+Native Linux launchers are included for advanced users. Upstream QEMU sources
+remain available for development; this fork does not yet package or validate
+QEMU releases.
 
-## Platform Support
+## Migration from the old wrapper
 
-| Runtime | Status |
-| --- | --- |
-| Docker on Linux or macOS | Supported and recommended |
-| Native Linux x86_64 | Supported for advanced users |
-| Native Linux arm64 | Upstream-supported |
-| Native macOS | Not supported |
+The API now listens on one port, `12340`. The old binary services on `10020` and
+`20020`, account endpoint on `30020`, and flat key response on `40020` have been
+replaced. The updated local downloader already expects Lite; set:
 
-`rootfs/` contains Linux/Android ELF binaries, so macOS support is Docker-only.
-This fork and its release workflow remain x86_64-focused. The upstream reference
-tree with `wrapper-android`, proot, and `aarch64` compiler settings is the arm64
-variant and is not part of this fork.
-
-This fork tracks [WorldObservationLog/wrapper `main`](https://github.com/WorldObservationLog/wrapper/tree/main).
-Upstream now defaults to `lite`, a separate single-port HTTP API with QEMU
-launchers. Migrating to `lite` requires client and release changes; it is not
-included in this compatibility update. See [UPSTREAM.md](UPSTREAM.md) for the
-reviewed revisions and migration boundary.
-
-## What This Fork Adds
-
-- Docker entrypoint support for first-login and normal service runs.
-- Doctor, check, and smoke scripts for local and Docker-backed validation.
-- `rootfs/data` mounted at runtime instead of baked into Docker images.
-- Docker builds include Android timezone data required by the bundled bionic
-  runtime.
-- Upstream key service on port `40020`, including release-mode template capture.
-- Shared common setup code for the privileged Linux wrapper and rootless wrapper.
-- Safer C paths around input parsing, path formatting, token/cache handling,
-  account JSON formatting, sockets, offline channel probing, and cleanup.
-
-Upstream-compatible ownership repair, environment-password login, file-based
-2FA, and verbose protocol logging remain available through explicit environment
-flags. Their safer defaults are unchanged in this fork.
-
-## Data And Login
-
-`rootfs/data` stores local account state, token caches, and app data. It is
-mounted into Docker containers and intentionally excluded from Docker images.
-Do not commit it.
-
-The Docker entrypoint does not recursively change ownership of mounted
-`rootfs/data` by default. If a moved or restored data directory has ownership
-that prevents startup, set `WRAPPER_CHOWN_DATA=1` for one repair run.
-
-Important account files:
-
-```text
-rootfs/data/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb
-rootfs/data/data/com.apple.android.music/files/STOREFRONT_ID
-rootfs/data/data/com.apple.android.music/files/MUSIC_TOKEN
+```yaml
+general:
+  lite-server: "http://127.0.0.1:12340"
 ```
 
-Normal service runs reuse these files and should not need credentials. Provide
-`USERNAME` only for first login, when the token cache is missing, or when the
-saved session has expired. The password is prompted interactively and hidden.
+Keep your existing `rootfs/data` directory. This fork continues to store account
+files under `rootfs/data/data/com.apple.android.music/files`, so the existing
+Docker volume remains valid. Existing accounts without an `ANDROID_ID` file
+reuse this fork's legacy device identity; new logins use upstream's persistent
+username-derived identity. Account reuse still needs an authenticated check on
+your installation. Back up the data directory before switching services.
 
-During login, password and 2FA prompts are read from the terminal with input
-hidden. File-based 2FA is only used when explicitly requested with
-`--code-from-file` or `WRAPPER_2FA_FROM_FILE=1`.
+The old `Wrapper.x86_64.latest.zip` release is retained. Lite releases use
+`Wrapper.Lite.x86_64.latest.zip` and tag `wrapper.lite.x86_64.latest`, so the old
+release remains available for rollback. See [UPSTREAM.md](UPSTREAM.md) for the
+research, integration decisions and validation limits.
 
-## Docker Workflow
+## Build and run with Docker
 
-Install Docker Desktop on macOS. The default container needs `--privileged`
-because the Linux wrapper prepares `/dev/urandom`, `rootfs`, `/proc`, and the
-bundled Linux runtime.
-
-Build a local image:
+Build from source:
 
 ```sh
-cd path/to/wrapper
-docker buildx build --platform linux/amd64 --load --tag wrapper:local .
+docker buildx build --platform linux/amd64 --load --tag wrapper-lite:local .
 ```
 
-The published `Wrapper.x86_64.latest.zip` is also a complete Docker build
-context. It contains tested prebuilt binaries and pinned Android timezone data,
-so building it skips the compiler, CMake, and Android NDK download:
+The Lite release ZIP is also a complete Docker build context. Its binaries and
+runtime inputs are prebuilt; building it skips the compiler and NDK download:
 
 ```sh
-unzip Wrapper.x86_64.latest.zip -d wrapper-release
-cd wrapper-release
-docker buildx build --platform linux/amd64 --load --tag wrapper:local .
+unzip Wrapper.Lite.x86_64.latest.zip -d wrapper-lite-release
+cd wrapper-lite-release
+docker buildx build --platform linux/amd64 --load --tag wrapper-lite:local .
 ```
 
-Release archives intentionally contain an empty runtime data area in the image.
-Continue to mount `rootfs/data` from the host when logging in or running the
-service.
-
-Docker builds verify downloaded build inputs before unpacking or installing
-them. The pinned inputs are:
-
-| Input | Pin |
-| --- | --- |
-| Android NDK | `android-ndk-r23b-linux.zip` with SHA-256 `c6e97f9c8cfe5b7be0a9e6c15af8e7a179475b7ded23e2d1c1fa0945d6fb4382` |
-| Android tzdata | `platform/system/timezone` commit `0470df3d38d8e08932ebbe08b3d8ec9bbdcd403f` with SHA-256 `479e83ca4d289b2ae3d08eb222a5167a3c8bff185f2ccac932458e96bd6489ee` |
-
-Login when no account database exists, or refresh login when the token cache is
-missing or expired:
+First login, or refresh an expired account:
 
 ```sh
-cd path/to/wrapper
 read "APPLE_ID?Apple ID: "
-
-docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
+docker run --platform linux/amd64 --privileged --rm -it \
   -v "$PWD/rootfs/data:/app/rootfs/data" \
   -e USERNAME="$APPLE_ID" \
-  wrapper:local
+  wrapper-lite:local --login "$APPLE_ID"
 ```
 
-When the password is requested, enter it at the container prompt. The password
-is read like a password and is not echoed to the terminal.
-
-When 2FA is requested, enter the code at the container prompt. The code is read
-like a password and is not echoed to the terminal.
-
-For legacy non-interactive login, set both `WRAPPER_PASSWORD_FROM_ENV=1` and
-`PASSWORD`. This exposes the password through Docker environment and wrapper
-process arguments, so prefer the interactive prompt.
-
-For detached 2FA handoff, add `-e WRAPPER_2FA_FROM_FILE=1` to the Docker command
-and write the six-digit code from another terminal:
+The password and six-digit 2FA code are prompted with terminal echo disabled.
+Login caches the account tokens and exits. Start the service separately:
 
 ```sh
-cd path/to/wrapper
+docker run --platform linux/amd64 --privileged --name wrapper-lite --rm -it \
+  -v "$PWD/rootfs/data:/app/rootfs/data" \
+  -p 127.0.0.1:12340:12340 \
+  wrapper-lite:local
+```
+
+`docker compose up --build` uses the same platform, privileges, data mount and
+localhost port. Use the interactive command for first login. The entrypoint can
+also log in automatically when `USERNAME` is set and required account caches
+are absent; it starts the service only after login succeeds.
+
+For an explicitly chosen non-interactive password, set both
+`WRAPPER_PASSWORD_FROM_ENV=1` and `PASSWORD` with `USERNAME`, or use the legacy
+`--login USER:PASSWORD` argument. Interactive login avoids storing passwords in
+Docker environment variables or process arguments.
+
+File-based 2FA is opt-in with `--code-from-file` or, for automatic login,
+`WRAPPER_2FA_FROM_FILE=1`. In another terminal:
+
+```sh
 umask 077
 printf '%s' 123456 > rootfs/data/data/com.apple.android.music/files/2fa.txt
 ```
 
-The 2FA file must be a regular, non-symlink file readable only by its owner.
-Empty or malformed files are deleted and the wrapper keeps waiting; unsafe files
-are refused. The default wait is 60 seconds. Set `WRAPPER_2FA_TIMEOUT_SECONDS`
-to `1` through `600` to adjust it.
+Only a private regular file with exactly six digits is accepted; surrounding
+whitespace is allowed. Symlinks and special files are refused. Invalid files are
+consumed and the wrapper keeps waiting. `WRAPPER_2FA_TIMEOUT_SECONDS` accepts
+`1` through `600` and defaults to `60`.
 
-Quit after login completes. Later service runs reuse the mounted account state
-and should not include credentials.
+## HTTP API
 
-Run the service:
+Success responses use `{"code":0,"msg":"SUCCESS","data":{...}}`.
+Application errors carry a nonzero `code`; clients must inspect that field even
+when the HTTP status is `200`, matching upstream's API.
 
-```sh
-cd path/to/wrapper
-docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
-  -v "$PWD/rootfs/data:/app/rootfs/data" \
-  -p 127.0.0.1:10020:10020 \
-  -p 127.0.0.1:20020:20020 \
-  -p 127.0.0.1:30020:30020 \
-  -p 127.0.0.1:40020:40020 \
-  wrapper:local
-```
+| Endpoint | Method | Parameters |
+| --- | --- | --- |
+| `/status` | GET | Returns `data.regions`; an unauthenticated account reports an empty array |
+| `/m3u8` | GET | Numeric `adamId` |
+| `/key` | GET | Numeric `adamId`, explicit percent-encoded `skd://` `uri` |
+| `/lyrics` | GET | `adamId`, optional `language`, `syllable`, `script` |
+| `/webplayback` | GET | `adamId` |
+| `/license` | POST | JSON `adamId`, `challenge`, `uri`; optional `drm-type` of `wv` or `pr` |
 
-The published host ports are bound to `127.0.0.1`. Inside the container, the
-entrypoint binds the Linux service to `0.0.0.0` so Docker can forward those
-localhost-only host ports into the container.
+The `/key` data includes the content template expected by the downloader.
+The shared prefetch URI is accepted only with `adamId=0`. Adam IDs are limited
+to 32 bytes and key URIs to 240 bytes. HTTP payloads are capped at 1 MiB;
+license challenges are capped at 256 KiB and license URIs at 4 KiB.
 
-The M3U8 service uses the offline/download channel when available. To force the
-streaming channel, add:
+Tokens refresh in the background every 1800 seconds by default. Set
+`--token-refresh-interval` to change the interval. Native refresh exceptions are
+logged without exposing protocol data and leave the service running.
 
-```sh
--e WRAPPER_DISABLE_OFFLINE=1
-```
+## Runtime settings
 
-Run diagnostics inside Docker:
+- `--host`, `--port`: listen address and port. Native defaults are `127.0.0.1`
+  and `12340`; Docker binds internally to `0.0.0.0` for forwarding.
+- `--base-dir`: account directory inside the runtime. The fork default is
+  `/data/data/com.apple.android.music/files`.
+- `--proxy`: HTTP/SOCKS proxy for runtime requests.
+- `--device-info`: override the nine slash-separated device identity fields.
+- `--debug` or `--log-level`: select logging detail. Debug logging keeps TLS
+  verification enabled. `--insecure-tls` explicitly disables verification for
+  development.
+- `WRAPPER_CA_BUNDLE`: override the CA file inside the runtime. The default is
+  `/system/etc/security/cacert.pem`.
+- `WRAPPER_DNS`: optionally provide comma-separated nameserver IP addresses.
+  Docker copies its resolver configuration into the runtime; public DNS servers
+  are not hardcoded.
+- `WRAPPER_DISABLE_OFFLINE=1`: force the streaming playback channel.
+- `WRAPPER_CHOWN_DATA=1`: explicitly request ownership repair for mounted data.
+- `WRAPPER_VERBOSE_RUNTIME_LOGS=1`: opt into raw vendor logs at debug level;
+  these can contain sensitive protocol data.
 
-```sh
-cd path/to/wrapper
-docker run --platform linux/amd64 --privileged --rm \
-  -v "$PWD/rootfs/data:/app/rootfs/data" \
-  wrapper:local --doctor
-```
+New token caches are written atomically with mode `600`. Normal logs omit token
+prefixes, key URIs, response bodies and request query strings. Keep account data
+local and publish port `12340` on localhost unless an external access boundary
+has been configured. The API itself has no authentication.
 
-## Linux Workflow
-
-Native Linux builds are useful for development, but Docker is the release path.
-
-Install build dependencies:
-
-```sh
-sudo apt install build-essential cmake curl unzip git
-```
-
-Install LLVM:
-
-```sh
-sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
-```
-
-Download Android NDK r23b:
+## Checks and releases
 
 ```sh
-cd path/to/wrapper
-curl -fLO https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
-echo "c6e97f9c8cfe5b7be0a9e6c15af8e7a179475b7ded23e2d1c1fa0945d6fb4382  android-ndk-r23b-linux.zip" | sha256sum -c -
-unzip -d . android-ndk-r23b-linux.zip
-```
-
-Build:
-
-```sh
-cd path/to/wrapper
-mkdir build
-cd build
-cmake ..
-make -j"$(nproc)"
-```
-
-The Linux build produces:
-
-- `rootfs/system/bin/main`, the engine-facing binary.
-- `wrapper`, the default privileged launcher.
-- `wrapper-rootless`, the rootless launcher for Linux hosts with unprivileged
-  user, mount, and PID namespaces enabled.
-
-Both Linux launchers share setup code for signal forwarding, `/dev/urandom`,
-`chroot`, runtime binary permissions, and data directory creation. Their
-namespace and `/proc` setup remains separate because privileged and rootless
-launch paths have different ordering requirements.
-
-## Services
-
-Default ports:
-
-| Port | Service |
-| --- | --- |
-| `10020` | Decrypt service |
-| `20020` | M3U8 URL service |
-| `30020` | Account info JSON service |
-| `40020` | Key HTTP service |
-
-The account info endpoint returns JSON with `storefront_id`, `dev_token`, and
-`music_token`. Responses are built with `cJSON` so token strings are escaped as
-valid JSON. Treat this endpoint as sensitive because it returns bearer-style
-account tokens; bind it to localhost unless you have added your own access
-control in front of it.
-
-The M3U8 URL service chooses the offline/download channel when available and
-falls back to the streaming playback channel otherwise. Set
-`WRAPPER_DISABLE_OFFLINE=1` in the container environment to force streaming.
-
-The key service accepts `GET /key?adamId=...&uri=...` (also `/` for upstream
-compatibility). Both parameters are required. Use a numeric `adamId` and a
-percent-encoded `skd://` URI from that track. The prefetch URI is accepted only
-with `adamId=0`, matching the later upstream `lite` correction.
-Responses contain `adamId`, `keyUri`, and `contentKey`; when template capture
-succeeds they also contain base64 `ctx` and `state` and hexadecimal
-`rcx`, `rax`, `rdx`, `r9`, and `rbp`. Capture is enabled in release builds.
-Treat these responses as sensitive. This fork never dumps persistent keys to
-logs or a `persistent_key.txt` file.
-
-Key requests return `400` for invalid parameters, `404` for unknown paths,
-`405` for unsupported methods, `413` for oversized requests, and `500` for
-native failures. A key request returns `503` while a legacy decrypt connection
-owns the native session; close that connection before retrying. This prevents
-session refresh from invalidating an active client's contexts. Key socket reads
-and writes have a 10-second idle timeout.
-
-Native builds default to `MYRELEASE=ON`, preserving this fork's release behavior.
-Use `cmake -DMYRELEASE=OFF` only for development that needs the upstream debug
-hooks.
-
-Runtime request caps reject oversized inputs before large allocations or
-token-bearing responses are processed:
-
-| Service | Limit |
-| --- | --- |
-| Decrypt adam ID | 32 bytes |
-| Decrypt key URI | 240 bytes |
-| Decrypt sample | 16 MiB |
-| M3U8 adam ID | 32 bytes |
-| Account HTTP request | 4 KiB |
-| Key HTTP headers | 4 KiB |
-| Key adam ID / URI | 32 / 240 bytes |
-
-## Diagnostics And Checks
-
-Run the doctor script from the source tree:
-
-```sh
-cd path/to/wrapper
 ./scripts/doctor.sh
-```
-
-The doctor checks:
-
-- required `rootfs` files
-- `rootfs/data` account directory
-- account database and token cache files
-- Android timezone database availability
-- Docker CLI and Docker daemon access
-- expected Docker image platform
-- default service ports
-- Linux container capability requirements
-
-Warnings are not always fatal. For example, the engine binary can be missing
-from the source tree before a Docker build because Docker generates it inside
-the image. Port warnings mean something is already listening on that port.
-
-Run local checks:
-
-```sh
-cd path/to/wrapper
 ./scripts/check.sh
+RUN_DOCKER_CHECKS=1 WRAPPER_CHECK_DATA_DIR=/tmp/wrapper-empty-data ./scripts/check.sh
 ```
 
-This checks shell syntax, C syntax, doctor diagnostics, and basic wrapper
-commands. On macOS, Docker Desktop must be running because doctor diagnostics
-check Docker availability.
+Docker checks start the real engine with the selected data directory and verify
+`/status` plus invalid-input response envelopes. Use an empty directory to avoid
+reading or refreshing your usual account state.
 
-Run full Docker-backed checks before publishing Linux/Docker changes:
+`./scripts/http-contract-check.sh build/_deps/cjson-src` tests the production
+HTTP handlers with a separately linked fixture backend. It exercises all six
+endpoints and both license types without calling Apple. The fixture backend is
+never linked into the production engine or included in releases.
+
+Native Linux builds use Android NDK r23b and CMake 3.25 or newer:
 
 ```sh
-cd path/to/wrapper
-RUN_DOCKER_CHECKS=1 ./scripts/check.sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j4
 ```
 
-The extended check builds a `linux/amd64` image, verifies account state from
-`rootfs/data` is not baked into the image, runs doctor diagnostics inside a
-privileged container, and runs the smoke test below.
-Set `WRAPPER_CHECK_DATA_DIR` to an empty temporary directory to run all checks
-without reading or mounting the normal account-state directory.
+Build outputs are `rootfs/system/bin/lite`, `wrapper-lite`, and
+`wrapper-lite-rootless`. Native launchers preserve the fork's checked namespace,
+mount and runtime-directory setup. Rootless execution requires permitted Linux
+user namespaces.
 
-Maintainers create the release artifact only after the native binaries, engine,
-and pinned timezone database have been generated:
+CI verifies the NDK download, timezone data and dated CA bundle by SHA-256,
+builds native artifacts and Docker contexts, runs input/HTTP/startup tests, and
+checks that actual Android libcurl rejects an untrusted TLS certificate. It then
+packages the explicit release manifest and validates the extracted prebuilt
+Docker context before updating the Lite release tag.
 
 ```sh
-cd path/to/wrapper
-./scripts/package-release.sh Wrapper.x86_64.latest.zip
+./scripts/package-release.sh Wrapper.Lite.x86_64.latest.zip
 ```
 
-The packager fails when required runtime files are missing or have the wrong
-timezone checksum. It stages an explicit file manifest and never copies
-`rootfs/data`, local credentials, source files, or build directories. CI then
-builds Docker images from both the source checkout and the extracted archive;
-the release tag is updated only after both paths pass.
+Releases exclude account data, resolver state, source files, test programs and
+toolchains. The public CA bundle comes from curl's Mozilla extraction dated
+2026-09-25 and is distributed under the Mozilla source's MPL 2.0 terms; its source
+and checksum are recorded in [UPSTREAM.md](UPSTREAM.md).
 
-Run the Docker smoke test directly:
+## Acknowledgements
 
-```sh
-cd path/to/wrapper
-./scripts/smoke.sh
-```
-
-The smoke test builds an image, runs doctor in the container, and, when local
-account state exists, starts the service on localhost test ports and verifies
-that the account endpoint returns the expected JSON fields without printing
-token values. Override ports with `WRAPPER_SMOKE_DECRYPT_PORT`,
-`WRAPPER_SMOKE_M3U8_PORT`, `WRAPPER_SMOKE_ACCOUNT_PORT`, and
-`WRAPPER_SMOKE_KEY_PORT`.
-
-## Command-Line Options
-
-```text
-Usage: wrapper [OPTION]...
-
-  -h, --help                Print help and exit
-  -V, --version             Print version and exit
-  -H, --host=STRING         Host to bind on (default: 127.0.0.1)
-  -D, --decrypt-port=INT    Decrypt service port (default: 10020)
-  -M, --m3u8-port=INT       M3U8 service port (default: 20020)
-  -A, --account-port=INT    Account service port (default: 30020)
-  -K, --key-port=INT        Key HTTP service port (default: 40020)
-  -P, --proxy=STRING        Proxy string (default: empty)
-  -L, --login=STRING        Login username; prompts for password
-  -F, --code-from-file      Read 2FA code from 2fa.txt instead of prompting
-  -B, --base-dir=STRING     Runtime data directory
-  -I, --device-info=STRING  Slash-separated device identity fields
-```
-
-## Safety Notes
-
-Use this project only with an active subscription and in situations where you
-have the right to access the content.
-
-Keep `rootfs/data` local. It can contain account/session state and should not be
-published or committed.
-
-The default Docker path requires `--privileged` so the Linux launcher can set up
-its runtime namespace and mounts. Do not run untrusted wrapper images or expose
-the service ports beyond localhost without an additional security boundary.
-
-Account tokens, M3U8 URLs, and auth responses can grant access to account-bound
-resources. Normal logs avoid printing token prefixes, full playback URLs, and
-auth response previews. Debug Android/curl runtime logs are opt-in with
-`WRAPPER_VERBOSE_RUNTIME_LOGS=1` and may contain sensitive protocol data.
-
-## Special Thanks
-
-- Anonymous, for the original version of this project and the legacy Frida
-  decryption method.
-- chocomint, for arm64 support.
-- WorldObservationLog, for maintaining the active upstream fork this work was
-  based on.
+WorldObservationLog maintains upstream Lite; zhaarey and the original authors
+provided the earlier wrapper lineage. This project's code is licensed under the
+[MIT license](LICENSE). Use it with an active subscription and content you have
+the right to access.

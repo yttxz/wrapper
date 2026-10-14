@@ -12,6 +12,33 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#define WRAPPER_DEFAULT_BASE_DIR "/data/data/com.apple.android.music/files"
+
+static inline const char *wrapper_base_dir(int argc, char **argv) {
+    const char* value = WRAPPER_DEFAULT_BASE_DIR;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--base-dir") == 0 && i + 1 < argc) value = argv[++i];
+        else if (strncmp(argv[i], "--base-dir=", 11) == 0) value = argv[i] + 11;
+    }
+    return value;
+}
+
+static inline int wrapper_handle_info(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            puts("wrapper-lite [--login USER[:PASSWORD]] [--code-from-file] [--base-dir PATH]");
+            puts("             [--host ADDRESS] [--port 12340] [--proxy URL] [--debug]");
+            puts("             [--token-refresh-interval SECONDS] [--log-level LEVEL] [--log-file PATH]");
+            return 1;
+        }
+        if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
+            puts("wrapper-lite 1.0.0");
+            return 1;
+        }
+    }
+    return 0;
+}
+
 extern pid_t child_proc;
 extern char **environ;
 
@@ -79,7 +106,7 @@ static inline int wrapper_enter_rootfs(void) {
 
 static inline void wrapper_chmod_runtime_binaries(void) {
     chmod("/system/bin/linker64", 0755);
-    chmod("/system/bin/main", 0755);
+    chmod("/system/bin/lite", 0755);
 }
 
 static inline int wrapper_ensure_directory(const char *path, mode_t mode) {

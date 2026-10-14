@@ -14,10 +14,10 @@ WORKDIR /app
 
 COPY ./ ./
 
-RUN if [[ -x /app/wrapper && ! -f /app/CMakeLists.txt ]]; then \
+RUN if [[ -x /app/wrapper-lite && ! -f /app/CMakeLists.txt ]]; then \
         touch /use_prebuilt; \
     elif [[ ! -f /app/CMakeLists.txt ]]; then \
-        echo "ERROR: build context contains neither CMakeLists.txt nor a prebuilt /app/wrapper." >&2; \
+        echo "ERROR: build context contains neither CMakeLists.txt nor a prebuilt /app/wrapper-lite." >&2; \
         exit 1; \
     fi
 
@@ -46,11 +46,11 @@ RUN if [[ ! -f /use_prebuilt ]]; then \
 RUN if [[ ! -f /use_prebuilt ]]; then \
         test -f /app/CMakeLists.txt || { echo "ERROR: source build context is missing CMakeLists.txt." >&2; exit 1; }; \
         mkdir -p build; \
-        cmake -S /app -B /app/build -DTARGET_ARCH=${TARGET_ARCH}; \
+        cmake -S /app -B /app/build -DCMAKE_BUILD_TYPE=Release; \
         cmake --build /app/build -j$(nproc); \
     else \
-        test -x /app/wrapper || { echo "ERROR: prebuilt context is missing executable /app/wrapper." >&2; exit 1; }; \
-        chmod +x /app/wrapper; \
+        test -x /app/wrapper-lite || { echo "ERROR: prebuilt context is missing executable /app/wrapper-lite." >&2; exit 1; }; \
+        chmod +x /app/wrapper-lite; \
     fi
 
 RUN if [[ ! -f /use_prebuilt ]]; then \
@@ -59,22 +59,26 @@ RUN if [[ ! -f /use_prebuilt ]]; then \
         base64 --decode /tmp/android-tzdata.b64 > /app/rootfs/system/usr/share/zoneinfo/tzdata; \
         rm /tmp/android-tzdata.b64; \
     fi; \
-    test -x /app/wrapper; \
-    test -f /app/rootfs/system/bin/main; \
+    test -x /app/wrapper-lite; \
+    test -f /app/rootfs/system/bin/lite; \
     test -f /app/rootfs/system/bin/linker64; \
     test -f /app/rootfs/system/usr/share/zoneinfo/tzdata; \
+    echo "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505  /app/rootfs/system/etc/security/cacert.pem" | sha256sum -c -; \
     echo "${ANDROID_TZDATA_SHA256}  /app/rootfs/system/usr/share/zoneinfo/tzdata" | sha256sum -c -
 
 FROM --platform=${RUNTIME_PLATFORM} debian:13.2
 
 WORKDIR /app
-COPY --from=build /app/wrapper /app/wrapper
+COPY --from=build /app/wrapper-lite /app/wrapper-lite
+COPY --from=build /app/wrapper-lite-rootless /app/wrapper-lite-rootless
 COPY --from=build /app/rootfs /app/rootfs
 COPY entrypoint.sh /app/entrypoint.sh
 COPY scripts/doctor.sh /app/scripts/doctor.sh
+COPY scripts/runtime-dns.sh /app/scripts/runtime-dns.sh
+RUN mkdir -p /app/rootfs/etc && cp /etc/resolv.conf /app/rootfs/etc/resolv.conf
 RUN mkdir -p /app/rootfs/data/data/com.apple.android.music/files && \
-    chmod +x /app/entrypoint.sh /app/scripts/doctor.sh
+    chmod +x /app/entrypoint.sh /app/scripts/doctor.sh /app/scripts/runtime-dns.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 
-EXPOSE 10020 20020 30020 40020
+EXPOSE 12340

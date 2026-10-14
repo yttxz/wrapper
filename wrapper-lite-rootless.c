@@ -1,9 +1,3 @@
-/*
- * wrapper-rootless.c — Apple Music 解密 wrapper 的宿主层 (免 root 版)
- * 与 wrapper.c 相同, 但用 user namespace (unshare CLONE_NEWUSER|NEWNS|NEWPID)
- * + 写 uid_map/gid_map + deny setgroups, 无需 CAP_SYS_ADMIN 即可 chroot。
- * 适用于无特权容器 / WSL 等环境。
- */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <sched.h>
@@ -18,11 +12,9 @@
 #include <string.h>
 #include <fcntl.h>
 
-#include "cmdline.h"
 #include "wrapper-common.h"
 
 pid_t child_proc = -1;
-struct gengetopt_args_info args_info;
 
 static int write_file(const char *path, const char *line) {
     int fd = open(path, O_WRONLY);
@@ -64,7 +56,8 @@ static int setup_unprivileged_namespaces() {
 }
 
 int main(int argc, char *argv[], char *envp[]) {
-    cmdline_parser(argc, argv, &args_info);
+    if (wrapper_handle_info(argc, argv)) return 0;
+    const char *base_dir = wrapper_base_dir(argc, argv);
     if (wrapper_install_signal_handler() != 0) {
         return 1;
     }
@@ -116,7 +109,7 @@ int main(int argc, char *argv[], char *envp[]) {
 
     wrapper_chmod_runtime_binaries();
 
-    if (wrapper_create_runtime_dirs(args_info.base_dir_arg) != 0) {
+    if (wrapper_create_runtime_dirs(base_dir) != 0) {
         return 1;
     }
 
@@ -124,7 +117,7 @@ int main(int argc, char *argv[], char *envp[]) {
         return 1;
     }
 
-    execve("/system/bin/main", argv, environ);
+    execve("/system/bin/lite", argv, environ);
     
     perror("execve");
     return 1;

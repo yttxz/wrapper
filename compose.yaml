@@ -5,16 +5,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        TARGET_ARCH: amd64
-        NDK_VERSION: 23
     volumes:
       - ./rootfs/data:/app/rootfs/data
     ports:
-      - "127.0.0.1:10020:10020"
-      - "127.0.0.1:20020:20020"
-      - "127.0.0.1:30020:30020"
-      - "127.0.0.1:40020:40020"
+      - "127.0.0.1:12340:12340"
     stdin_open: true
     tty: true
     environment:
