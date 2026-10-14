@@ -18,7 +18,13 @@ through Docker Desktop; this project does not ship a macOS-native executable.
 `rootfs/` contains Linux/Android ELF binaries, so macOS support is Docker-only.
 This fork and its release workflow remain x86_64-focused. The upstream reference
 tree with `wrapper-android`, proot, and `aarch64` compiler settings is the arm64
-variant and is not part of this parity pass.
+variant and is not part of this fork.
+
+This fork tracks [WorldObservationLog/wrapper `main`](https://github.com/WorldObservationLog/wrapper/tree/main).
+Upstream now defaults to `lite`, a separate single-port HTTP API with QEMU
+launchers. Migrating to `lite` requires client and release changes; it is not
+included in this compatibility update. See [UPSTREAM.md](UPSTREAM.md) for the
+reviewed revisions and migration boundary.
 
 ## What This Fork Adds
 
@@ -27,6 +33,7 @@ variant and is not part of this parity pass.
 - `rootfs/data` mounted at runtime instead of baked into Docker images.
 - Docker builds include Android timezone data required by the bundled bionic
   runtime.
+- Upstream key service on port `40020`, including release-mode template capture.
 - Shared common setup code for the privileged Linux wrapper and rootless wrapper.
 - Safer C paths around input parsing, path formatting, token/cache handling,
   account JSON formatting, sockets, offline channel probing, and cleanup.
@@ -145,6 +152,7 @@ docker run --platform linux/amd64 --privileged --name wrapper --rm -it \
   -p 127.0.0.1:10020:10020 \
   -p 127.0.0.1:20020:20020 \
   -p 127.0.0.1:30020:30020 \
+  -p 127.0.0.1:40020:40020 \
   wrapper:local
 ```
 
@@ -224,6 +232,7 @@ Default ports:
 | `10020` | Decrypt service |
 | `20020` | M3U8 URL service |
 | `30020` | Account info JSON service |
+| `40020` | Key HTTP service |
 
 The account info endpoint returns JSON with `storefront_id`, `dev_token`, and
 `music_token`. Responses are built with `cJSON` so token strings are escaped as
@@ -235,6 +244,27 @@ The M3U8 URL service chooses the offline/download channel when available and
 falls back to the streaming playback channel otherwise. Set
 `WRAPPER_DISABLE_OFFLINE=1` in the container environment to force streaming.
 
+The key service accepts `GET /key?adamId=...&uri=...` (also `/` for upstream
+compatibility). Both parameters are required. Use a numeric `adamId` and a
+percent-encoded `skd://` URI from that track. The prefetch URI is accepted only
+with `adamId=0`, matching the later upstream `lite` correction.
+Responses contain `adamId`, `keyUri`, and `contentKey`; when template capture
+succeeds they also contain base64 `ctx` and `state` and hexadecimal
+`rcx`, `rax`, `rdx`, `r9`, and `rbp`. Capture is enabled in release builds.
+Treat these responses as sensitive. This fork never dumps persistent keys to
+logs or a `persistent_key.txt` file.
+
+Key requests return `400` for invalid parameters, `404` for unknown paths,
+`405` for unsupported methods, `413` for oversized requests, and `500` for
+native failures. A key request returns `503` while a legacy decrypt connection
+owns the native session; close that connection before retrying. This prevents
+session refresh from invalidating an active client's contexts. Key socket reads
+and writes have a 10-second idle timeout.
+
+Native builds default to `MYRELEASE=ON`, preserving this fork's release behavior.
+Use `cmake -DMYRELEASE=OFF` only for development that needs the upstream debug
+hooks.
+
 Runtime request caps reject oversized inputs before large allocations or
 token-bearing responses are processed:
 
@@ -245,6 +275,8 @@ token-bearing responses are processed:
 | Decrypt sample | 16 MiB |
 | M3U8 adam ID | 32 bytes |
 | Account HTTP request | 4 KiB |
+| Key HTTP headers | 4 KiB |
+| Key adam ID / URI | 32 / 240 bytes |
 
 ## Diagnostics And Checks
 
@@ -319,7 +351,8 @@ The smoke test builds an image, runs doctor in the container, and, when local
 account state exists, starts the service on localhost test ports and verifies
 that the account endpoint returns the expected JSON fields without printing
 token values. Override ports with `WRAPPER_SMOKE_DECRYPT_PORT`,
-`WRAPPER_SMOKE_M3U8_PORT`, and `WRAPPER_SMOKE_ACCOUNT_PORT`.
+`WRAPPER_SMOKE_M3U8_PORT`, `WRAPPER_SMOKE_ACCOUNT_PORT`, and
+`WRAPPER_SMOKE_KEY_PORT`.
 
 ## Command-Line Options
 
@@ -332,6 +365,7 @@ Usage: wrapper [OPTION]...
   -D, --decrypt-port=INT    Decrypt service port (default: 10020)
   -M, --m3u8-port=INT       M3U8 service port (default: 20020)
   -A, --account-port=INT    Account service port (default: 30020)
+  -K, --key-port=INT        Key HTTP service port (default: 40020)
   -P, --proxy=STRING        Proxy string (default: empty)
   -L, --login=STRING        Login username; prompts for password
   -F, --code-from-file      Read 2FA code from 2fa.txt instead of prompting

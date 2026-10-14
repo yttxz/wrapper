@@ -12,5 +12,6 @@ Dockerfile
 README.md
 build
 build-*
+android-ndk-r23b
 release-context
 Wrapper.*.zip

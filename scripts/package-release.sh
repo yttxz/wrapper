@@ -44,7 +44,8 @@ compose.yaml
 entrypoint.sh
 scripts/doctor.sh
 .env.example
-README.md'
+README.md
+UPSTREAM.md'
 
 cd "$root"
 printf '%s\n' "$required_paths" | while IFS= read -r path; do
@@ -79,7 +80,7 @@ payload=$tmp_dir/payload
 mkdir -p "$payload/rootfs" "$payload/scripts"
 
 tar -C rootfs --exclude='./data' -cf - . | tar -C "$payload/rootfs" -xf -
-cp wrapper wrapper-rootless Dockerfile compose.yaml entrypoint.sh .env.example README.md "$payload/"
+cp wrapper wrapper-rootless Dockerfile compose.yaml entrypoint.sh .env.example README.md UPSTREAM.md "$payload/"
 cp scripts/doctor.sh "$payload/scripts/doctor.sh"
 
 if [ -e "$payload/rootfs/data" ]; then

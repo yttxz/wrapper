@@ -53,10 +53,16 @@ target_include_directories(main PRIVATE ${cjson_SOURCE_DIR})
 target_link_libraries(main PRIVATE cjson)
 target_link_libraries(main PRIVATE dobby)
 
-set_target_properties(main PROPERTIES 
-    COMPILE_DEFINITIONS "MyRelease"
+set_target_properties(main PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/rootfs/system/bin"
 )
+
+# Release build: disable curl/log debug hooks. The Dobby R1 key-server hook
+# (content template capture) stays enabled in both modes — Dobby is always linked.
+option(MYRELEASE "Release build (no curl/log debug hooks; R1 key-server hook still enabled)" ON)
+if(MYRELEASE)
+    target_compile_definitions(main PRIVATE MyRelease)
+endif()
 
 set(SYSTEM_LIB_DIR "${CMAKE_SOURCE_DIR}/rootfs/system/lib64")
 find_library(ANDROIDAPPMUSIC_LIB androidappmusic PATHS ${SYSTEM_LIB_DIR})

@@ -40,6 +40,14 @@ if command -v cc >/dev/null 2>&1; then
   run cc -std=c99 -Wall -Wextra -Werror -I. \
     tests/runtime_dirs_test.c -o "$runtime_test_dir/runtime-dirs-test"
   run "$runtime_test_dir/runtime-dirs-test" "$runtime_test_dir/root"
+  run cc -std=c99 -Wall -Wextra -Werror -pthread -I. \
+    tests/key_request_test.c -o "$runtime_test_dir/key-request-test"
+  run "$runtime_test_dir/key-request-test"
+  if command -v c++ >/dev/null 2>&1; then
+    run c++ -std=c++11 -Wall -Wextra -Werror -pthread \
+      tests/key_exception_test.cpp main.cpp -o "$runtime_test_dir/key-exception-test"
+    run "$runtime_test_dir/key-exception-test"
+  fi
 else
   printf '[warn] host C compiler not available; skipping runtime directory test\n'
 fi

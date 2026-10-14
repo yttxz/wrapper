@@ -77,4 +77,4 @@ RUN mkdir -p /app/rootfs/data/data/com.apple.android.music/files && \
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 
-EXPOSE 10020 20020 30020
+EXPOSE 10020 20020 30020 40020
